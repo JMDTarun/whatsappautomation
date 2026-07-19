@@ -201,8 +201,8 @@ async function startWhatsApp(sessionId = 'default') {
 
             if (fromMe && !textLower.startsWith('!') && !isMessageToMyself) continue;
 
-            const senderJid = fromMe ? myJid : (msg.key.remoteJidAlt || remoteJid);
-            const isAdminCommand = ADMIN_NUMBER && (senderJid === ADMIN_NUMBER) && (!fromMe || isMessageToMyself);
+            // Only allow report generation when the user texts their own number (Message Yourself)
+            const isAdminCommand = isMessageToMyself;
 
             // Admin commands
             if (isAdminCommand && (textLower.startsWith('!report') || textLower.startsWith('!range'))) {

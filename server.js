@@ -93,14 +93,15 @@ async function startWhatsApp(sessionId = 'default') {
                 logsCollection = db.collection('keyword_logs');
             }
 
-            // Check if session is older than 30 days
+            // Check if session is older than the configured limit
             const metadataId = `session_metadata_${sessionId}`;
             const metadata = await authCollection.findOne({ _id: metadataId });
             const now = Date.now();
             if (metadata && metadata.createdAt) {
+                const limitDays = metadata.logoutDays || 30; // Default to 30 days
                 const daysOld = (now - metadata.createdAt) / (1000 * 60 * 60 * 24);
-                if (daysOld >= 30) {
-                    console.log(`Session ${sessionId} is ${daysOld.toFixed(1)} days old (limit: 30 days). Forcing re-login...`);
+                if (daysOld >= limitDays) {
+                    console.log(`Session ${sessionId} is ${daysOld.toFixed(1)} days old (limit: ${limitDays} days). Forcing re-login...`);
                     // Delete keys for THIS session only
                     await authCollection.deleteMany({ _id: { $regex: new RegExp(`^${sessionId}-`) } });
                 }
@@ -297,6 +298,11 @@ async function startWhatsApp(sessionId = 'default') {
     });
 }
 
+// API: Keep service alive
+app.get('/ping', (req, res) => {
+    res.status(200).send('pong');
+});
+
 // API: Initialize a new session
 app.post('/api/session', (req, res) => {
     const { sessionId } = req.body;
@@ -330,6 +336,25 @@ app.post('/api/session/message', async (req, res) => {
     }
 
     res.json({ success: true, message: `Auto reply message updated for session ${sessionId}` });
+});
+
+// API: Update logout limit for a specific session
+app.post('/api/session/logout-time', async (req, res) => {
+    const { sessionId, days } = req.body;
+    if (!sessionId || !days || isNaN(days)) {
+        return res.status(400).json({ error: 'sessionId and a valid number of days are required' });
+    }
+
+    if (authCollection) {
+        await authCollection.updateOne(
+            { _id: `session_metadata_${sessionId}` },
+            { $set: { logoutDays: Number(days) } },
+            { upsert: true }
+        );
+        res.json({ success: true, message: `Logout time limit updated to ${days} days for session ${sessionId}` });
+    } else {
+        res.status(500).json({ error: 'MongoDB is not connected' });
+    }
 });
 
 // API: Get active sessions

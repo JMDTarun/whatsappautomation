@@ -18,48 +18,78 @@ It allows you to deploy the server directly, authenticate remotely via an API en
    ```
 4. The server will start and listen on port `3000`. By default, it will automatically spin up a session called `default`.
 
-## 2. Remote Authentication & Multi-Account Support
+## 2. API Reference (cURL Commands)
 
-The server exposes an API to manage multiple WhatsApp accounts.
+The server exposes a REST API to manage your WhatsApp accounts, send messages, and configure dynamic settings.
 
-1. **Start a new session**: 
-   To add a new WhatsApp number, send a POST request to initialize a new bot session:
-   ```bash
-   curl -X POST http://localhost:3000/api/session \
-   -H "Content-Type: application/json" \
-   -d '{"sessionId": "number2"}'
-   ```
-2. **Scan the QR Code**:
-   Go to your browser and fetch the QR code for that specific session:
-   `http://<YOUR_SERVER_IP>:3000/api/qr/number2`
-3. Scan it with your phone! You can repeat this process for `number3`, `number4`, etc.
-4. **View Active Sessions**:
-   You can check the connection status of all your bots by visiting:
-   `http://<YOUR_SERVER_IP>:3000/api/sessions`
+### 1. Start a New WhatsApp Session
+Initialize a new bot session (e.g., for a new phone number).
+```bash
+curl -X POST http://localhost:3000/api/session \
+-H "Content-Type: application/json" \
+-d '{"sessionId": "number2"}'
+```
+
+### 2. Get QR Code for a Session
+After starting a session, fetch the QR code in your browser or via cURL and scan it with your phone.
+```bash
+curl -X GET http://localhost:3000/api/qr/number2
+```
+
+### 3. View All Active Sessions
+Check the connection status of all your running bots.
+```bash
+curl -X GET http://localhost:3000/api/sessions
+```
+
+### 4. Set Dynamic Auto-Reply Message (Per-Session)
+Configure a unique auto-reply message for a specific bot session. Use `{{name}}` to dynamically insert the user's WhatsApp name.
+```bash
+curl -X POST http://localhost:3000/api/session/message \
+-H "Content-Type: application/json" \
+-d '{
+  "sessionId": "number2", 
+  "message": "Hello {{name}}, welcome to our VIP support! How can we assist you today?"
+}'
+```
+
+### 5. Set Custom Logout Time (Per-Session)
+Configure how many days a session should stay logged in before forcefully requiring a new QR code (defaults to 30 days).
+```bash
+curl -X POST http://localhost:3000/api/session/logout-time \
+-H "Content-Type: application/json" \
+-d '{
+  "sessionId": "number2", 
+  "days": 45
+}'
+```
+
+### 6. Send an Outbound Message
+Send a message programmatically from a specific bot to any phone number.
+```bash
+curl -X POST http://localhost:3000/api/send \
+-H "Content-Type: application/json" \
+-d '{
+  "sessionId": "number2",
+  "number": "919876543210",
+  "message": "Hello from the API!"
+}'
+```
+*(If you omit `sessionId`, it defaults to the `default` session).*
+
+### 7. Keep Server Alive (Ping)
+Use this endpoint with services like UptimeRobot to prevent your free Render server from sleeping.
+```bash
+curl -X GET http://localhost:3000/ping
+```
 
 *Note: The server forces an automatic re-login every 30 days to ensure session stability. You will need to re-scan the QR codes when this happens.*
 
-## 3. Usage
+## 3. Auto-Reply Usage
 
-### Auto-Reply
-The `server.js` script is pre-configured to listen for incoming messages.
-- If a user sends a message containing "Hello! Can I get more info on this?", it replies automatically.
+The `server.js` script automatically listens for incoming messages.
+- If a user sends a message containing "Hello! Can I get more info on this?", it replies automatically using the message configured via the API (or `.env`).
 - The interaction is logged to MongoDB with the specific `sessionId` of the bot that received the message.
-
-### Send Message API
-You can send messages programmatically. You must specify which `sessionId` should send the message.
-
-**Endpoint:** `POST http://<YOUR_SERVER_IP>:3000/api/send`
-
-**Body (JSON):**
-```json
-{
-  "sessionId": "number2",
-  "number": "1234567890",
-  "message": "Hello from the API!"
-}
-```
-*(If you omit `sessionId`, it falls back to the `default` session).*
 
 ## 4. Docker, Render & MongoDB Setup
 

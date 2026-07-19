@@ -201,10 +201,11 @@ async function startWhatsApp(sessionId = 'default') {
 
             if (fromMe && !textLower.startsWith('!') && !isMessageToMyself) continue;
 
-            const effectiveJid = fromMe ? (ADMIN_NUMBER || myJid) : (msg.key.remoteJidAlt || remoteJid);
+            const senderJid = fromMe ? myJid : (msg.key.remoteJidAlt || remoteJid);
+            const isAdminCommand = ADMIN_NUMBER && (senderJid === ADMIN_NUMBER) && (!fromMe || isMessageToMyself);
 
             // Admin commands
-            if (ADMIN_NUMBER && (effectiveJid === ADMIN_NUMBER || remoteJid === ADMIN_NUMBER) && (textLower.startsWith('!report') || textLower.startsWith('!range'))) {
+            if (isAdminCommand && (textLower.startsWith('!report') || textLower.startsWith('!range'))) {
                 let startDate = null;
                 let endDate = null;
 

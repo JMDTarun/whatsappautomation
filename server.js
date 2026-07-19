@@ -318,6 +318,41 @@ app.post('/api/session', (req, res) => {
     res.json({ success: true, message: `Session ${sessionId} started. Get QR at /api/qr/${sessionId}` });
 });
 
+// API: Remove a session
+app.delete('/api/session/:sessionId', async (req, res) => {
+    const { sessionId } = req.params;
+    if (!sessionId) {
+        return res.status(400).json({ error: 'sessionId is required' });
+    }
+
+    try {
+        const sock = sessions.get(sessionId);
+        if (sock) {
+            sock.logout('Requested by API');
+            sessions.delete(sessionId);
+        }
+        
+        connectionStatus.delete(sessionId);
+        qrs.delete(sessionId);
+        sessionAutoReplies.delete(sessionId);
+
+        if (authCollection) {
+            await authCollection.deleteMany({ _id: { $regex: new RegExp(`^${sessionId}-`) } });
+            await authCollection.deleteOne({ _id: `session_metadata_${sessionId}` });
+        } else {
+            const fs = require('fs');
+            try {
+                fs.rmSync(`auth_info_${sessionId}`, { recursive: true, force: true });
+            } catch (e) { }
+        }
+
+        res.json({ success: true, message: `Session ${sessionId} has been completely removed.` });
+    } catch (error) {
+        console.error(`Error removing session ${sessionId}:`, error);
+        res.status(500).json({ error: 'Failed to remove session' });
+    }
+});
+
 // API: Update auto-reply message for a specific session
 app.post('/api/session/message', async (req, res) => {
     const { sessionId, message } = req.body;

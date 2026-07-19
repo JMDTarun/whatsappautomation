@@ -42,7 +42,13 @@ Check the connection status of all your running bots.
 curl -X GET http://localhost:3000/api/sessions
 ```
 
-### 4. Set Dynamic Auto-Reply Message (Per-Session)
+### 4. Remove a Session
+Permanently log out a bot and delete its encryption keys from the database.
+```bash
+curl -X DELETE http://localhost:3000/api/session/number2
+```
+
+### 5. Set Dynamic Auto-Reply Message (Per-Session)
 Configure a unique auto-reply message for a specific bot session. Use `{{name}}` to dynamically insert the user's WhatsApp name.
 ```bash
 curl -X POST http://localhost:3000/api/session/message \
@@ -53,7 +59,7 @@ curl -X POST http://localhost:3000/api/session/message \
 }'
 ```
 
-### 5. Set Custom Logout Time (Per-Session)
+### 6. Set Custom Logout Time (Per-Session)
 Configure how many days a session should stay logged in before forcefully requiring a new QR code (defaults to 30 days).
 ```bash
 curl -X POST http://localhost:3000/api/session/logout-time \
@@ -64,7 +70,7 @@ curl -X POST http://localhost:3000/api/session/logout-time \
 }'
 ```
 
-### 6. Send an Outbound Message
+### 7. Send an Outbound Message
 Send a message programmatically from a specific bot to any phone number.
 ```bash
 curl -X POST http://localhost:3000/api/send \
@@ -77,7 +83,7 @@ curl -X POST http://localhost:3000/api/send \
 ```
 *(If you omit `sessionId`, it defaults to the `default` session).*
 
-### 7. Keep Server Alive (Ping)
+### 8. Keep Server Alive (Ping)
 Use this endpoint with services like UptimeRobot to prevent your free Render server from sleeping.
 ```bash
 curl -X GET http://localhost:3000/ping

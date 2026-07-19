@@ -195,9 +195,10 @@ async function startWhatsApp(sessionId = 'default') {
             if (!textMessage) continue;
             const textLower = textMessage.toLowerCase();
             const remoteJid = msg.key.remoteJid;
+            const actualRemoteJid = msg.key.remoteJidAlt || remoteJid;
 
             const myJid = sock.user.id.replace(/:.*@/, '@');
-            const isMessageToMyself = (remoteJid === myJid);
+            const isMessageToMyself = (actualRemoteJid === myJid);
 
             if (fromMe && !textLower.startsWith('!') && !isMessageToMyself) continue;
 

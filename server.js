@@ -212,7 +212,16 @@ async function startWhatsApp(sessionId = 'default') {
 
                 const commandArgs = textLower.replace('!report', '').replace('!range', '').trim();
                 if (commandArgs) {
-                    if (commandArgs.includes(' to ')) {
+                    const daysMatch = commandArgs.match(/^-(\d+)\s*days?$/);
+                    if (daysMatch) {
+                        const daysAgo = parseInt(daysMatch[1], 10);
+                        const end = new Date();
+                        const start = new Date();
+                        start.setDate(end.getDate() - daysAgo);
+                        
+                        startDate = start.toISOString().split('T')[0];
+                        endDate = end.toISOString().split('T')[0];
+                    } else if (commandArgs.includes(' to ')) {
                         const dates = commandArgs.split(' to ');
                         startDate = dates[0].trim();
                         endDate = dates[1].trim();

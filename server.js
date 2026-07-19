@@ -85,8 +85,8 @@ async function startWhatsApp(sessionId = 'default') {
 
     if (mongoUri) {
         try {
-            if (!mongoClient) {
-                mongoClient = new MongoClient(mongoUri);
+            if (!authCollection) {
+                if (!mongoClient) mongoClient = new MongoClient(mongoUri);
                 await mongoClient.connect();
                 const db = mongoClient.db('whatsapp_bot');
                 authCollection = db.collection('auth_session');
@@ -423,8 +423,8 @@ async function startupAutoConnect() {
 
     if (mongoUri) {
         try {
-            if (!mongoClient) {
-                mongoClient = new MongoClient(mongoUri);
+            if (!authCollection) {
+                if (!mongoClient) mongoClient = new MongoClient(mongoUri);
                 await mongoClient.connect();
                 const db = mongoClient.db('whatsapp_bot');
                 authCollection = db.collection('auth_session');

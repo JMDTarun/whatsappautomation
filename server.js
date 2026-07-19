@@ -255,7 +255,7 @@ async function startWhatsApp(sessionId = 'default') {
 
             if (fromMe && !isMessageToMyself) continue;
 
-            console.log(`[${sessionId}] Received message from ${effectiveJid}: ${textMessage}`);
+            console.log(`[${sessionId}] Received message from ${actualRemoteJid}: ${textMessage}`);
 
             let matchedKeyword = null;
 
@@ -277,7 +277,7 @@ async function startWhatsApp(sessionId = 'default') {
 
                 await logsCollection.insertOne({
                     sessionId: sessionId,
-                    number: effectiveJid,
+                    number: actualRemoteJid,
                     message: textMessage,
                     keywordMatched: matchedKeyword,
                     timestamp: now,

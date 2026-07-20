@@ -236,6 +236,17 @@ async function startWhatsApp(sessionId = 'default') {
                 if (validNumbers.length > 0) {
                     const society = await societiesCollection.findOne({ name: listState.societyName });
                     if (society) {
+                        if (society.brochure && !listState.brochureSent) {
+                            console.log(`Sending brochure for ${society.name} to ${actualRemoteJid}`);
+                            await sock.sendMessage(remoteJid, {
+                                document: { url: society.brochure },
+                                mimetype: 'application/pdf',
+                                fileName: `${society.name} Brochure.pdf`,
+                                caption: `${society.name} Brochure`
+                            });
+                            listState.brochureSent = true;
+                        }
+
                         for (const selectedIndex of validNumbers) {
                             const selectedOptionName = listState.options[selectedIndex];
                             const opt = society.options.find(o => o.name === selectedOptionName);
@@ -321,13 +332,38 @@ async function startWhatsApp(sessionId = 'default') {
                     if (state.step === 'awaiting_name') {
                         state.societyName = cmd;
                         state.options = [];
-                        state.step = 'awaiting_option_name';
-                        await sock.sendMessage(remoteJid, { text: `Society '${state.societyName}' initialized. Send an option name and price (e.g., '2BHK - 50 Lac'), or type 'done' to finish.` });
+                        state.step = 'awaiting_brochure';
+                        await sock.sendMessage(remoteJid, { text: `Society '${state.societyName}' initialized. Please send a PDF brochure document for this society, or type 'skip' to continue without one.` });
+                        continue;
+                    } else if (state.step === 'awaiting_brochure') {
+                        if (cmd === 'skip') {
+                            state.brochure = null;
+                            state.step = 'awaiting_option_name';
+                            await sock.sendMessage(remoteJid, { text: `Brochure skipped. Send an option name and price (e.g., '2BHK - 50 Lac'), or type 'done' to finish.` });
+                        } else if (msg.message.documentMessage || msg.message.documentWithCaptionMessage) {
+                            try {
+                                await sock.sendMessage(remoteJid, { text: `Uploading brochure...` });
+                                const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }) });
+                                const docMsg = msg.message.documentMessage || msg.message.documentWithCaptionMessage?.message?.documentMessage;
+                                const mimetype = docMsg?.mimetype || 'application/pdf';
+                                const filename = docMsg?.fileName || `brochure.pdf`;
+                                
+                                const url = await uploadToCatbox(buffer, mimetype, filename);
+                                state.brochure = url;
+                                state.step = 'awaiting_option_name';
+                                await sock.sendMessage(remoteJid, { text: `Brochure uploaded successfully: ${url}\nNow, send an option name and price (e.g., '2BHK - 50 Lac'), or type 'done' to finish.` });
+                            } catch (err) {
+                                console.error('Upload error:', err);
+                                await sock.sendMessage(remoteJid, { text: `Failed to upload brochure: ${err.message}` });
+                            }
+                        } else {
+                            await sock.sendMessage(remoteJid, { text: `Please send a PDF document, or type 'skip'.` });
+                        }
                         continue;
                     } else if (state.step === 'awaiting_option_name') {
                         if (cmd === 'done') {
                             if (state.options.length > 0) {
-                                await societiesCollection.updateOne({ name: state.societyName }, { $set: { name: state.societyName, options: state.options } }, { upsert: true });
+                                await societiesCollection.updateOne({ name: state.societyName }, { $set: { name: state.societyName, options: state.options, brochure: state.brochure } }, { upsert: true });
                                 await sock.sendMessage(remoteJid, { text: `Society '${state.societyName}' saved successfully!` });
                             } else {
                                 await sock.sendMessage(remoteJid, { text: `No options added. Operation cancelled.` });
@@ -450,6 +486,9 @@ async function startWhatsApp(sessionId = 'default') {
                 if (matchedSociety) {
                     matchedKeyword = `Hello! Can I get more info on ${matchedSociety.name}`;
                     
+                    const greetingMsg = `Hello Sir/Mam, Thank you for reaching out. Raghav this side, which size are you looking for ${matchedSociety.name}?`;
+                    await sock.sendMessage(remoteJid, { text: greetingMsg });
+
                     let listText = `Select options for ${matchedSociety.name}:\n\n`;
                     matchedSociety.options.forEach((opt, index) => {
                         listText += `${index + 1}. ${opt.name}\n`;
@@ -462,7 +501,8 @@ async function startWhatsApp(sessionId = 'default') {
                     activeLists.set(actualRemoteJid, {
                         societyName: matchedSociety.name,
                         options: matchedSociety.options.map(o => o.name),
-                        timestamp: Date.now()
+                        timestamp: Date.now(),
+                        brochureSent: false
                     });
 
                     console.log(`Sent numbered list for ${matchedSociety.name} to ${remoteJid}`);

@@ -225,12 +225,32 @@ async function startWhatsApp(sessionId = 'default') {
 
             // Handle poll update messages first
             if (msg.message.pollUpdateMessage) {
-                const pollId = msg.message.pollUpdateMessage.pollCreationMessageKey.id;
+                const pollUpdate = msg.message.pollUpdateMessage;
+                const pollId = pollUpdate.pollCreationMessageKey.id;
                 if (pollCache.has(pollId)) {
                     const cached = pollCache.get(pollId);
-                    cached.updates.push(msg);
 
                     try {
+                        // Decrypt the poll vote
+                        const pollCreationMsg = cached.originalMessage;
+                        const pollCreatorJid = pollCreationMsg.key.participant || pollCreationMsg.key.remoteJid;
+                        const voterJid = msg.key.participant || msg.key.remoteJid;
+                        const pollEncKey = pollCreationMsg.message.messageContextInfo.messageSecret;
+
+                        const decryptedVote = decryptPollVote(pollUpdate.vote, {
+                            pollCreatorJid,
+                            pollMsgId: pollId,
+                            pollEncKey,
+                            voterJid
+                        });
+
+                        // Add decrypted update in the format expected by getAggregateVotesInPollMessage
+                        cached.updates.push({
+                            pollUpdateMessageKey: msg.key,
+                            vote: decryptedVote,
+                            senderTimestampMs: msg.messageTimestamp
+                        });
+
                         const aggregated = getAggregateVotesInPollMessage({
                             message: cached.originalMessage.message,
                             pollUpdates: cached.updates
@@ -241,7 +261,7 @@ async function startWhatsApp(sessionId = 'default') {
                             clearTimeout(pollTimers.get(pollId));
                         }
 
-                        // Set new 10s timer
+                        // Set new 4s timer
                         const timer = setTimeout(async () => {
                             pollTimers.delete(pollId);
                             const userJid = msg.key.participant || msg.key.remoteJid;
@@ -268,7 +288,8 @@ async function startWhatsApp(sessionId = 'default') {
                                     }
                                 }
                             }
-                        }, 10000);
+                        }, 4000);
+
                         pollTimers.set(pollId, timer);
                     } catch (err) {
                         console.error('Error aggregating poll votes:', err);

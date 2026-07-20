@@ -286,12 +286,13 @@ async function startWhatsApp(sessionId = 'default') {
 
             if (isAdminCommand) {
                 let state = adminState.get(actualRemoteJid);
+                const cmd = textLower.trim();
 
-                if (textLower === '!addsociety') {
+                if (cmd === '!addsociety') {
                     adminState.set(actualRemoteJid, { step: 'awaiting_name' });
                     await sock.sendMessage(remoteJid, { text: "What is the name of the society?" });
                     continue;
-                } else if (textLower === '!listsocieties') {
+                } else if (cmd === '!listsocieties') {
                     const societies = await societiesCollection.find({}).toArray();
                     if (societies.length === 0) {
                         await sock.sendMessage(remoteJid, { text: "No societies found." });
@@ -300,8 +301,8 @@ async function startWhatsApp(sessionId = 'default') {
                         await sock.sendMessage(remoteJid, { text: `Societies:\n${list}` });
                     }
                     continue;
-                } else if (textLower.startsWith('!delsociety ')) {
-                    const name = textLower.replace('!delsociety ', '').trim();
+                } else if (cmd.startsWith('!delsociety ')) {
+                    const name = cmd.replace('!delsociety ', '').trim();
                     const result = await societiesCollection.deleteOne({ name });
                     if (result.deletedCount > 0) {
                         await sock.sendMessage(remoteJid, { text: `Society '${name}' deleted.` });
@@ -312,20 +313,20 @@ async function startWhatsApp(sessionId = 'default') {
                 }
 
                 if (state) {
-                    if (textLower === 'cancel') {
+                    if (cmd === 'cancel') {
                         adminState.delete(actualRemoteJid);
                         await sock.sendMessage(remoteJid, { text: "Operation cancelled." });
                         continue;
                     }
 
                     if (state.step === 'awaiting_name') {
-                        state.societyName = textLower.trim();
+                        state.societyName = cmd;
                         state.options = [];
                         state.step = 'awaiting_option_name';
                         await sock.sendMessage(remoteJid, { text: `Society '${state.societyName}' initialized. Send an option name and price (e.g., '2BHK - 50 Lac'), or type 'done' to finish.` });
                         continue;
                     } else if (state.step === 'awaiting_option_name') {
-                        if (textLower === 'done') {
+                        if (cmd === 'done') {
                             if (state.options.length > 0) {
                                 await societiesCollection.updateOne({ name: state.societyName }, { $set: { name: state.societyName, options: state.options } }, { upsert: true });
                                 await sock.sendMessage(remoteJid, { text: `Society '${state.societyName}' saved successfully!` });
@@ -340,7 +341,7 @@ async function startWhatsApp(sessionId = 'default') {
                         }
                         continue;
                     } else if (state.step === 'awaiting_media') {
-                        if (textLower === 'done') {
+                        if (cmd === 'done') {
                             state.options.push(state.currentOption);
                             state.step = 'awaiting_option_name';
                             await sock.sendMessage(remoteJid, { text: `Media saved for '${state.currentOption.name}'. Send the next option (e.g., '3BHK - 80 Lac') or type 'done' to finish.` });
@@ -703,6 +704,7 @@ async function startupAutoConnect() {
                 const db = mongoClient.db('whatsapp_bot');
                 authCollection = db.collection('auth_session');
                 logsCollection = db.collection('keyword_logs');
+                societiesCollection = db.collection('societies');
             }
 
             const metadataDocs = await authCollection.find({ _id: { $regex: /^session_metadata_/ } }).toArray();

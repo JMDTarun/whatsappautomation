@@ -121,6 +121,29 @@ You can download the report directly from your browser. You can optionally filte
 - `GET http://<YOUR_SERVER_IP>:3000/api/report?sessionId=number2&date=2026-07-19` (Specific session, specific date)
 - `GET http://<YOUR_SERVER_IP>:3000/api/report?startDate=2026-07-01&endDate=2026-07-15` (Date range)
 
+## 6. Admin Commands for Societies
+
+From your `ADMIN_NUMBER` phone, you can manage the societies, their options, and media directly via WhatsApp by sending commands to the bot.
+
+### Add a Society (`!addsociety`)
+Send `!addsociety` to the bot to start the interactive setup flow:
+1. The bot will ask for the **society name**.
+2. The bot will ask you to upload a **Brochure PDF** (or type `skip`).
+3. The bot will ask for an **option name and price** (e.g., `2BHK - 50 Lac`).
+4. The bot will ask you to send all **images and videos** for that specific option. Wait for the success confirmation for each file.
+5. Type `done` when finished uploading media for that option.
+6. The bot will ask for the next option. Repeat, or type `done` again to finish and save the entire society.
+
+### Delete a Society (`!delsociety`)
+Send `!delsociety <Society Name>` to permanently delete a society from the database.
+Example: `!delsociety Verona Heights`
+
+### List Societies (`!listsocieties`)
+Send `!listsocieties` to see a text list of all currently saved societies in your database.
+
+### Cancel Operation (`cancel`)
+At any point during the `!addsociety` setup flow, you can type `cancel` to immediately abort the process.
+
 # kLMhAu4ML6mHnqK2 mongodb+srv://developertarun_db_user:kLMhAu4ML6mHnqK2@tbedi.abddfya.mongodb.net/
 ## mongodb+srv://developertarun_db_user:kLMhAu4ML6mHnqK2@tbedi.abddfya.mongodb.net/?appName=tbedi
 ## mongodb+srv://developertarun_db_user:<db_password>@tbedi.abddfya.mongodb.net/?appName=tbedi

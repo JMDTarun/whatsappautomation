@@ -82,78 +82,41 @@ async function generateExcelReport(sessionId, startDateString, endDateString) {
     return { buffer: await workbook.xlsx.writeBuffer(), count: records.length };
 }
 
-async function uploadToCatbox(buffer, mimetype, filename, onProgress) {
+async function uploadToCatbox(buffer, mimetype, filename) {
     console.log(`Starting upload to Catbox: ${filename}, size: ${buffer.length} bytes, type: ${mimetype}`);
+    
+    const blob = new Blob([buffer], { type: mimetype });
+    const formData = new FormData();
+    formData.append('reqtype', 'fileupload');
+    formData.append('fileToUpload', blob, filename);
     
     const MAX_RETRIES = 3;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minutes timeout
+        
         try {
-            return await new Promise((resolve, reject) => {
-                const boundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW';
-                const postDataStart = Buffer.from(
-                    `--${boundary}\r\n` +
-                    `Content-Disposition: form-data; name="reqtype"\r\n\r\n` +
-                    `fileupload\r\n` +
-                    `--${boundary}\r\n` +
-                    `Content-Disposition: form-data; name="fileToUpload"; filename="${filename}"\r\n` +
-                    `Content-Type: ${mimetype}\r\n\r\n`
-                );
-                const postDataEnd = Buffer.from(`\r\n--${boundary}--\r\n`);
-                
-                const req = https.request({
-                    hostname: 'catbox.moe',
-                    path: '/user/api.php',
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-                        'Content-Length': postDataStart.length + buffer.length + postDataEnd.length,
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Connection': 'keep-alive'
-                    }
-                }, (res) => {
-                    let data = '';
-                    res.on('data', (chunk) => data += chunk);
-                    res.on('end', () => {
-                        if (res.statusCode >= 200 && res.statusCode < 300) {
-                            console.log(`Catbox upload successful: ${data}`);
-                            resolve(data);
-                        } else {
-                            reject(new Error(`Catbox upload failed: ${res.statusCode} - ${data}`));
-                        }
-                    });
-                });
-                
-                req.on('error', (e) => reject(e));
-                req.setTimeout(120000, () => req.destroy(new Error('Catbox upload timeout (120s)')));
-                
-                (async () => {
-                    try {
-                        req.write(postDataStart);
-                        let uploaded = postDataStart.length;
-                        const total = postDataStart.length + buffer.length + postDataEnd.length;
-                        
-                        const chunkSize = 256 * 1024; // 256KB chunks
-                        for (let i = 0; i < buffer.length; i += chunkSize) {
-                            const chunk = buffer.slice(i, i + chunkSize);
-                            const canContinue = req.write(chunk);
-                            uploaded += chunk.length;
-                            
-                            if (onProgress) onProgress(Math.round((uploaded / total) * 100));
-                            
-                            if (!canContinue) {
-                                await new Promise(r => req.once('drain', r));
-                            }
-                        }
-                        
-                        req.write(postDataEnd);
-                        req.end();
-                        if (onProgress) onProgress(100);
-                    } catch (err) {
-                        reject(err);
-                    }
-                })();
+            const response = await fetch('https://catbox.moe/user/api.php', {
+                method: 'POST',
+                body: formData,
+                signal: controller.signal
             });
+            clearTimeout(timeoutId);
+            
+            if (!response.ok) {
+                const errText = await response.text().catch(() => '');
+                throw new Error(`Catbox upload failed: ${response.status} ${response.statusText} - ${errText}`);
+            }
+            
+            const url = await response.text();
+            if (!url || !url.startsWith('http')) {
+                throw new Error(`Catbox returned invalid URL: ${url}`);
+            }
+            
+            console.log(`Catbox upload successful: ${url}`);
+            return url.trim();
         } catch (e) {
+            clearTimeout(timeoutId);
             console.error(`Catbox upload attempt ${attempt} failed:`, e.message);
             if (attempt === MAX_RETRIES) throw e;
             console.log(`Retrying upload in 5 seconds...`);
@@ -302,7 +265,7 @@ async function startWhatsApp(sessionId = 'default') {
                 if (validNumbers.length > 0) {
                     const society = await societiesCollection.findOne({ name: listState.societyName });
                     if (society) {
-                        if (society.brochure && !listState.brochureSent) {
+                        if (society.brochure && society.brochure.trim() !== '' && !listState.brochureSent) {
                             console.log(`Sending brochure for ${society.name} to ${actualRemoteJid}`);
                             await sock.sendMessage(remoteJid, {
                                 document: { url: society.brochure },
@@ -320,10 +283,14 @@ async function startWhatsApp(sessionId = 'default') {
                                 console.log(`Sending media for selected option: ${selectedOptionName} to ${actualRemoteJid}`);
                                 await sock.sendMessage(remoteJid, { text: `Here are the details for ${opt.name}:` });
                                 for (const img of opt.images) {
-                                    await sock.sendMessage(remoteJid, { image: { url: img }, caption: opt.name });
+                                    if (img && img.trim() !== '') {
+                                        await sock.sendMessage(remoteJid, { image: { url: img }, caption: opt.name });
+                                    }
                                 }
                                 for (const vid of opt.videos) {
-                                    await sock.sendMessage(remoteJid, { video: { url: vid }, caption: opt.name });
+                                    if (vid && vid.trim() !== '') {
+                                        await sock.sendMessage(remoteJid, { video: { url: vid }, caption: opt.name });
+                                    }
                                 }
                                 
                                 if (logsCollection) {
@@ -412,9 +379,8 @@ async function startWhatsApp(sessionId = 'default') {
                                 await sock.sendMessage(remoteJid, { text: `Uploading brochure...` });
                                 console.log('Downloading document from WhatsApp...');
                                 
-                                let currentProgress = 0;
                                 uploadInterval = setInterval(() => {
-                                    sock.sendMessage(remoteJid, { text: `Still uploading, please wait... (${currentProgress}%)` }).catch(() => {});
+                                    sock.sendMessage(remoteJid, { text: `Still uploading, please wait...` }).catch(() => {});
                                 }, 5000);
                                 
                                 // Explicitly unwrap for Baileys to prevent download hangs
@@ -433,7 +399,7 @@ async function startWhatsApp(sessionId = 'default') {
                                 const mimetype = docMsg?.mimetype || 'application/pdf';
                                 const filename = docMsg?.fileName || `brochure.pdf`;
                                 
-                                const url = await uploadToCatbox(buffer, mimetype, filename, (pct) => currentProgress = pct);
+                                const url = await uploadToCatbox(buffer, mimetype, filename);
                                 state.brochure = url;
                                 state.step = 'awaiting_option_name';
                                 await sock.sendMessage(remoteJid, { text: `Brochure uploaded successfully: ${url}\nNow, send an option name and price (e.g., '2BHK - 50 Lac'), or type 'done' to finish.` });
@@ -471,9 +437,8 @@ async function startWhatsApp(sessionId = 'default') {
                             let uploadInterval;
                             try {
                                 await sock.sendMessage(remoteJid, { text: `Uploading media...` });
-                                let currentProgress = 0;
                                 uploadInterval = setInterval(() => {
-                                    sock.sendMessage(remoteJid, { text: `Still uploading, please wait... (${currentProgress}%)` }).catch(() => {});
+                                    sock.sendMessage(remoteJid, { text: `Still uploading, please wait...` }).catch(() => {});
                                 }, 5000);
                                 
                                 const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }) });
@@ -482,11 +447,13 @@ async function startWhatsApp(sessionId = 'default') {
                                 const ext = isImage ? 'jpeg' : 'mp4';
                                 const filename = `upload.${ext}`;
                                 
-                                const url = await uploadToCatbox(buffer, mimetype, filename, (pct) => currentProgress = pct);
-                                if (isImage) {
-                                    state.currentOption.images.push(url);
-                                } else {
-                                    state.currentOption.videos.push(url);
+                                const url = await uploadToCatbox(buffer, mimetype, filename);
+                                if (url && url.trim() !== '') {
+                                    if (isImage) {
+                                        state.currentOption.images.push(url.trim());
+                                    } else {
+                                        state.currentOption.videos.push(url.trim());
+                                    }
                                 }
                                 await sock.sendMessage(remoteJid, { text: `Uploaded successfully: ${url}` });
                             } catch (err) {

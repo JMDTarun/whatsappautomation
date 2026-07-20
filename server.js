@@ -5,9 +5,16 @@ import { makeWASocket, useMultiFileAuthState, downloadMediaMessage } from '@whis
 import pino from 'pino';
 import QRCode from 'qrcode';
 import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
+import { exec } from 'child_process';
+import util from 'util';
+import { v2 as cloudinary } from 'cloudinary';
 import { MongoClient } from 'mongodb';
 import useMongoDBAuthState from './useMongoDBAuthState.js';
 import ExcelJS from 'exceljs';
+
+const execPromise = util.promisify(exec);
 
 const app = express();
 app.use(express.json());
@@ -82,47 +89,57 @@ async function generateExcelReport(sessionId, startDateString, endDateString) {
     return { buffer: await workbook.xlsx.writeBuffer(), count: records.length };
 }
 
-async function uploadToCatbox(buffer, mimetype, filename) {
-    console.log(`Starting upload to Catbox: ${filename}, size: ${buffer.length} bytes, type: ${mimetype}`);
+async function compressPDF(buffer) {
+    if (buffer.length <= 10 * 1024 * 1024) return buffer;
     
-    const blob = new Blob([buffer], { type: mimetype });
-    const formData = new FormData();
-    formData.append('reqtype', 'fileupload');
-    formData.append('fileToUpload', blob, filename);
+    console.log(`Compressing PDF (Original Size: ${buffer.length} bytes)...`);
+    const tempDir = path.join(process.cwd(), 'tmp');
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
     
-    const MAX_RETRIES = 3;
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minutes timeout
+    const uniqueId = crypto.randomBytes(4).toString('hex');
+    const inputPath = path.join(tempDir, `input_${uniqueId}.pdf`);
+    const outputPath = path.join(tempDir, `output_${uniqueId}.pdf`);
+    
+    try {
+        fs.writeFileSync(inputPath, buffer);
+        await execPromise(`gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/ebook -dNOPAUSE -dQUIET -dBATCH -sOutputFile="${outputPath}" "${inputPath}"`);
         
-        try {
-            const response = await fetch('https://catbox.moe/user/api.php', {
-                method: 'POST',
-                body: formData,
-                signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-            
-            if (!response.ok) {
-                const errText = await response.text().catch(() => '');
-                throw new Error(`Catbox upload failed: ${response.status} ${response.statusText} - ${errText}`);
-            }
-            
-            const url = await response.text();
-            if (!url || !url.startsWith('http')) {
-                throw new Error(`Catbox returned invalid URL: ${url}`);
-            }
-            
-            console.log(`Catbox upload successful: ${url}`);
-            return url.trim();
-        } catch (e) {
-            clearTimeout(timeoutId);
-            console.error(`Catbox upload attempt ${attempt} failed:`, e.message);
-            if (attempt === MAX_RETRIES) throw e;
-            console.log(`Retrying upload in 5 seconds...`);
-            await new Promise(resolve => setTimeout(resolve, 5000));
-        }
+        const compressedBuffer = fs.readFileSync(outputPath);
+        console.log(`PDF Compressed. New Size: ${compressedBuffer.length} bytes`);
+        
+        return compressedBuffer.length < buffer.length ? compressedBuffer : buffer;
+    } catch (err) {
+        console.error('PDF compression failed:', err);
+        return buffer;
+    } finally {
+        if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+        if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
     }
+}
+
+async function uploadToCloudinary(buffer, mimetype, filename) {
+    console.log(`Starting upload to Cloudinary: ${filename}, size: ${buffer.length} bytes, type: ${mimetype}`);
+    
+    return new Promise((resolve, reject) => {
+        const uploadStream = cloudinary.uploader.upload_stream(
+            { resource_type: 'auto' },
+            (error, result) => {
+                if (error) {
+                    console.error('Cloudinary upload failed:', error);
+                    return reject(new Error(`Cloudinary upload failed: ${error.message}`));
+                }
+                console.log(`Cloudinary upload successful: ${result.secure_url}`);
+                resolve(result.secure_url);
+            }
+        );
+        
+        const timeoutId = setTimeout(() => reject(new Error('Cloudinary upload timed out (5m)')), 300000);
+        
+        uploadStream.on('finish', () => clearTimeout(timeoutId));
+        uploadStream.on('error', () => clearTimeout(timeoutId));
+        
+        uploadStream.end(buffer);
+    });
 }
 
 async function startWhatsApp(sessionId = 'default') {
@@ -392,14 +409,18 @@ async function startWhatsApp(sessionId = 'default') {
                                     };
                                 }
                                 
-                                const buffer = await downloadMediaMessage(mediaMsg, 'buffer', {}, { logger: pino({ level: 'silent' }) });
+                                let buffer = await downloadMediaMessage(mediaMsg, 'buffer', {}, { logger: pino({ level: 'silent' }) });
                                 console.log(`Document downloaded successfully, size: ${buffer.length} bytes`);
                                 
                                 const docMsg = mediaMsg.message.documentMessage;
                                 const mimetype = docMsg?.mimetype || 'application/pdf';
                                 const filename = docMsg?.fileName || `brochure.pdf`;
                                 
-                                const url = await uploadToCatbox(buffer, mimetype, filename);
+                                if (mimetype === 'application/pdf') {
+                                    buffer = await compressPDF(buffer);
+                                }
+                                
+                                const url = await uploadToCloudinary(buffer, mimetype, filename);
                                 state.brochure = url;
                                 state.step = 'awaiting_option_name';
                                 await sock.sendMessage(remoteJid, { text: `Brochure uploaded successfully: ${url}\nNow, send an option name and price (e.g., '2BHK - 50 Lac'), or type 'done' to finish.` });
@@ -447,7 +468,7 @@ async function startWhatsApp(sessionId = 'default') {
                                 const ext = isImage ? 'jpeg' : 'mp4';
                                 const filename = `upload.${ext}`;
                                 
-                                const url = await uploadToCatbox(buffer, mimetype, filename);
+                                const url = await uploadToCloudinary(buffer, mimetype, filename);
                                 if (url && url.trim() !== '') {
                                     if (isImage) {
                                         state.currentOption.images.push(url.trim());

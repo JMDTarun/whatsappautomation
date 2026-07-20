@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
-import { makeWASocket, useMultiFileAuthState, downloadMediaMessage, decryptPollVote, getAggregateVotesInPollMessage } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, downloadMediaMessage } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import QRCode from 'qrcode';
 import fs from 'fs';
@@ -25,8 +25,7 @@ let logsCollection = null;
 let societiesCollection = null;
 
 const adminState = new Map(); // Maps remoteJid to state object
-const pollCache = new Map(); // Store poll creation messages for decryption
-const pollTimers = new Map(); // Store timeouts for poll responses
+const activeLists = new Map(); // Maps actualRemoteJid to list state { societyName, options, timestamp }
 
 const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
 
@@ -158,9 +157,6 @@ async function startWhatsApp(sessionId = 'default') {
         printQRInTerminal: true,
         logger: pino({ level: 'silent' }),
         getMessage: async (key) => {
-            if (pollCache.has(key.id)) {
-                return pollCache.get(key.id);
-            }
             return { conversation: 'unknown message' };
         }
     });
@@ -223,97 +219,66 @@ async function startWhatsApp(sessionId = 'default') {
             const myJid = sock.user.id.replace(/:.*@/, '@');
             const isMessageToMyself = (actualRemoteJid === myJid);
 
-            // Handle poll update messages first
-            if (msg.message.pollUpdateMessage) {
-                const pollUpdate = msg.message.pollUpdateMessage;
-                const pollId = pollUpdate.pollCreationMessageKey.id;
-                if (pollCache.has(pollId)) {
-                    const cached = pollCache.get(pollId);
+            // Poll handling removed in favor of numbered list replies
 
-                    try {
-                        // Decrypt the poll vote
-                        const pollCreationMsg = cached.originalMessage;
-                        const normalizeJid = (jid) => jid ? jid.replace(/:.*@/, '@') : jid;
-                        const myJid = normalizeJid(sock.user.id);
-                        
-                        const pollCreatorJid = pollCreationMsg.key.fromMe ? myJid : normalizeJid(pollCreationMsg.key.participant || pollCreationMsg.key.remoteJid);
-                        const voterJid = msg.key.fromMe ? myJid : normalizeJid(msg.key.participant || msg.key.remoteJid);
-                        const pollEncKey = pollCreationMsg.message.messageContextInfo.messageSecret;
+            // Extract text/caption
+            const textMessage = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.videoMessage?.caption || "";
+            const textLower = textMessage.toLowerCase();
 
-                        const decryptedVote = decryptPollVote(pollUpdate.vote, {
-                            pollCreatorJid,
-                            pollMsgId: pollId,
-                            pollEncKey,
-                            voterJid
-                        });
-
-                        // Add decrypted update in the format expected by getAggregateVotesInPollMessage
-                        cached.updates.push({
-                            pollUpdateMessageKey: msg.key,
-                            vote: decryptedVote,
-                            senderTimestampMs: msg.messageTimestamp
-                        });
-
-                        const aggregated = getAggregateVotesInPollMessage({
-                            message: cached.originalMessage.message,
-                            pollUpdates: cached.updates
-                        });
-
-                        // Clear existing timer
-                        if (pollTimers.has(pollId)) {
-                            clearTimeout(pollTimers.get(pollId));
-                        }
-
-                        // Set new 4s timer
-                        const timer = setTimeout(async () => {
-                            pollTimers.delete(pollId);
-                            const userJid = msg.key.participant || msg.key.remoteJid;
-                            
-                            const selectedOptionNames = aggregated
-                                .filter(opt => opt.voters.includes(userJid))
-                                .map(opt => opt.name);
-
-                            if (selectedOptionNames.length > 0) {
-                                console.log(`Sending media for selected options: ${selectedOptionNames.join(', ')} to ${userJid}`);
-                                const society = await societiesCollection.findOne({ name: cached.societyName });
-                                if (society) {
-                                    for (const optionName of selectedOptionNames) {
-                                        const opt = society.options.find(o => o.name === optionName);
-                                        if (opt) {
-                                            await sock.sendMessage(userJid, { text: `Here are the details for ${opt.name}:` });
-                                            for (const img of opt.images) {
-                                                await sock.sendMessage(userJid, { image: { url: img }, caption: opt.name });
-                                            }
-                                            for (const vid of opt.videos) {
-                                                await sock.sendMessage(userJid, { video: { url: vid }, caption: opt.name });
-                                            }
-                                        }
-                                    }
+            // Handle number replies for active lists
+            const isNumberReply = /^\s*\d+(?:\s*,\s*\d+)*\s*$/.test(textMessage);
+            if (isNumberReply && !isMessageToMyself && activeLists.has(actualRemoteJid)) {
+                const listState = activeLists.get(actualRemoteJid);
+                const numbers = textMessage.split(',').map(n => parseInt(n.trim(), 10) - 1);
+                
+                const validNumbers = numbers.filter(n => n >= 0 && n < listState.options.length);
+                
+                if (validNumbers.length > 0) {
+                    const society = await societiesCollection.findOne({ name: listState.societyName });
+                    if (society) {
+                        for (const selectedIndex of validNumbers) {
+                            const selectedOptionName = listState.options[selectedIndex];
+                            const opt = society.options.find(o => o.name === selectedOptionName);
+                            if (opt) {
+                                console.log(`Sending media for selected option: ${selectedOptionName} to ${actualRemoteJid}`);
+                                await sock.sendMessage(remoteJid, { text: `Here are the details for ${opt.name}:` });
+                                for (const img of opt.images) {
+                                    await sock.sendMessage(remoteJid, { image: { url: img }, caption: opt.name });
+                                }
+                                for (const vid of opt.videos) {
+                                    await sock.sendMessage(remoteJid, { video: { url: vid }, caption: opt.name });
                                 }
                                 
                                 if (logsCollection) {
                                     const now = new Date();
                                     const dateString = now.toISOString().split('T')[0];
+                                    
+                                    const existingLog = await logsCollection.findOne({ number: actualRemoteJid, dateString: dateString, societyName: listState.societyName });
+                                    
+                                    let newOptions = [selectedOptionName];
+                                    if (existingLog && existingLog.selectedOptions && existingLog.selectedOptions !== 'Pending / No Selection') {
+                                        const prevOptions = existingLog.selectedOptions.split(', ').filter(Boolean);
+                                        if (!prevOptions.includes(selectedOptionName)) {
+                                            newOptions = [...prevOptions, selectedOptionName];
+                                        } else {
+                                            newOptions = prevOptions;
+                                        }
+                                    }
+                                    
                                     await logsCollection.updateOne(
-                                        { number: userJid, dateString: dateString, societyName: cached.societyName },
-                                        { $set: { selectedOptions: selectedOptionNames.join(', '), timestamp: now } },
+                                        { number: actualRemoteJid, dateString: dateString, societyName: listState.societyName },
+                                        { $set: { selectedOptions: newOptions.join(', '), timestamp: now } },
                                         { upsert: true }
                                     );
                                 }
                             }
-                        }, 10000);
-
-                        pollTimers.set(pollId, timer);
-                    } catch (err) {
-                        console.error('Error aggregating poll votes:', err);
+                        }
                     }
+                } else {
+                    await sock.sendMessage(remoteJid, { text: `Invalid option. Please reply with a valid number between 1 and ${listState.options.length}.` });
                 }
-                continue;
+                continue; // Prevent matching keywords again
             }
-
-            // Extract text/caption
-            const textMessage = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.videoMessage?.caption || "";
-            const textLower = textMessage.toLowerCase();
 
             // Admin commands
             const isAdminCommand = isMessageToMyself;
@@ -469,11 +434,11 @@ async function startWhatsApp(sessionId = 'default') {
             console.log(`[${sessionId}] Received message from ${actualRemoteJid}: ${textMessage}`);
 
             let matchedKeyword = null;
+            let matchedSociety = null;
 
             // Keyword Matching for Societies
             if (textLower && societiesCollection) {
                 const societies = await societiesCollection.find({}).toArray();
-                let matchedSociety = null;
                 for (const soc of societies) {
                     // Check if the message contains the society name
                     if (textLower.includes(`hello! can i get more info on ${soc.name.toLowerCase()}`)) {
@@ -485,25 +450,22 @@ async function startWhatsApp(sessionId = 'default') {
                 if (matchedSociety) {
                     matchedKeyword = `Hello! Can I get more info on ${matchedSociety.name}`;
                     
-                    const pollName = `Select options for ${matchedSociety.name}`;
-                    const pollValues = matchedSociety.options.map(o => o.name);
+                    let listText = `Select options for ${matchedSociety.name}:\n\n`;
+                    matchedSociety.options.forEach((opt, index) => {
+                        listText += `${index + 1}. ${opt.name}\n`;
+                    });
+                    listText += `\nPlease reply with the number of the option you want details for (e.g. 1 or 1, 2).`;
                     
-                    const pollMsg = await sock.sendMessage(remoteJid, {
-                        poll: {
-                            name: pollName,
-                            values: pollValues,
-                            selectableCount: 0 // allow multiple
-                        }
+                    await sock.sendMessage(remoteJid, { text: listText });
+
+                    // Save state for number replies
+                    activeLists.set(actualRemoteJid, {
+                        societyName: matchedSociety.name,
+                        options: matchedSociety.options.map(o => o.name),
+                        timestamp: Date.now()
                     });
 
-                    // Cache it for decryption
-                    pollCache.set(pollMsg.key.id, {
-                        originalMessage: pollMsg,
-                        updates: [],
-                        societyName: matchedSociety.name
-                    });
-
-                    console.log(`Sent poll for ${matchedSociety.name} to ${remoteJid}`);
+                    console.log(`Sent numbered list for ${matchedSociety.name} to ${remoteJid}`);
                 } else if (textLower.includes('hello! can i get more info on this?')) {
                     // Fallback to the old logic if no society was found but they used the generic prompt
                     matchedKeyword = 'Hello! Can I get more info on this?';

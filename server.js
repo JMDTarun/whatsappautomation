@@ -64,8 +64,8 @@ async function generateExcelReport(sessionId, startDateString, endDateString) {
         { header: 'Session ID', key: 'sessionId', width: 20 },
         { header: 'Date & Time', key: 'timestamp', width: 25 },
         { header: 'Phone Number', key: 'number', width: 20 },
-        { header: 'Matched Keyword', key: 'keyword', width: 20 },
-        { header: 'Message', key: 'message', width: 50 },
+        { header: 'Society', key: 'societyName', width: 30 },
+        { header: 'Selected Options', key: 'selectedOptions', width: 50 },
     ];
 
     records.forEach(record => {
@@ -74,8 +74,8 @@ async function generateExcelReport(sessionId, startDateString, endDateString) {
             sessionId: record.sessionId || 'default',
             timestamp: new Date(record.timestamp).toLocaleString(),
             number: plainNumber,
-            keyword: record.keywordMatched,
-            message: record.message
+            societyName: record.societyName || 'N/A',
+            selectedOptions: record.selectedOptions || 'None'
         });
     });
 
@@ -287,8 +287,18 @@ async function startWhatsApp(sessionId = 'default') {
                                         }
                                     }
                                 }
+                                
+                                if (logsCollection) {
+                                    const now = new Date();
+                                    const dateString = now.toISOString().split('T')[0];
+                                    await logsCollection.updateOne(
+                                        { number: userJid, dateString: dateString, societyName: cached.societyName },
+                                        { $set: { selectedOptions: selectedOptionNames.join(', '), timestamp: now } },
+                                        { upsert: true }
+                                    );
+                                }
                             }
-                        }, 4000);
+                        }, 10000);
 
                         pollTimers.set(pollId, timer);
                     } catch (err) {
@@ -508,12 +518,13 @@ async function startWhatsApp(sessionId = 'default') {
             if (matchedKeyword && logsCollection) {
                 const now = new Date();
                 const dateString = now.toISOString().split('T')[0];
+                const societyName = matchedSociety ? matchedSociety.name : 'Fallback / Generic';
 
                 await logsCollection.insertOne({
                     sessionId: sessionId,
                     number: actualRemoteJid,
-                    message: textMessage,
-                    keywordMatched: matchedKeyword,
+                    societyName: societyName,
+                    selectedOptions: 'Pending / No Selection',
                     timestamp: now,
                     dateString: dateString
                 });

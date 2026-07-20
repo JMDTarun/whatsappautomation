@@ -233,8 +233,11 @@ async function startWhatsApp(sessionId = 'default') {
                     try {
                         // Decrypt the poll vote
                         const pollCreationMsg = cached.originalMessage;
-                        const pollCreatorJid = pollCreationMsg.key.participant || pollCreationMsg.key.remoteJid;
-                        const voterJid = msg.key.participant || msg.key.remoteJid;
+                        const normalizeJid = (jid) => jid ? jid.replace(/:.*@/, '@') : jid;
+                        const myJid = normalizeJid(sock.user.id);
+                        
+                        const pollCreatorJid = pollCreationMsg.key.fromMe ? myJid : normalizeJid(pollCreationMsg.key.participant || pollCreationMsg.key.remoteJid);
+                        const voterJid = msg.key.fromMe ? myJid : normalizeJid(msg.key.participant || msg.key.remoteJid);
                         const pollEncKey = pollCreationMsg.message.messageContextInfo.messageSecret;
 
                         const decryptedVote = decryptPollVote(pollUpdate.vote, {

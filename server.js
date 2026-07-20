@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
-import { makeWASocket, useMultiFileAuthState } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, downloadMediaMessage, decryptPollVote, getAggregateVotesInPollMessage } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import QRCode from 'qrcode';
 import fs from 'fs';
@@ -22,6 +22,11 @@ const sessionAutoReplies = new Map(); // Store dynamic replies per session
 let mongoClient = null;
 let authCollection = null;
 let logsCollection = null;
+let societiesCollection = null;
+
+const adminState = new Map(); // Maps remoteJid to state object
+const pollCache = new Map(); // Store poll creation messages for decryption
+const pollTimers = new Map(); // Store timeouts for poll responses
 
 const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
 
@@ -77,6 +82,21 @@ async function generateExcelReport(sessionId, startDateString, endDateString) {
     return { buffer: await workbook.xlsx.writeBuffer(), count: records.length };
 }
 
+async function uploadToCatbox(buffer, mimetype, filename) {
+    const blob = new Blob([buffer], { type: mimetype });
+    const formData = new FormData();
+    formData.append('reqtype', 'fileupload');
+    formData.append('fileToUpload', blob, filename);
+    const response = await fetch('https://catbox.moe/user/api.php', {
+        method: 'POST',
+        body: formData
+    });
+    if (!response.ok) {
+        throw new Error(`Catbox upload failed: ${response.statusText}`);
+    }
+    return await response.text();
+}
+
 async function startWhatsApp(sessionId = 'default') {
     console.log(`Starting WhatsApp connection for session: ${sessionId}...`);
 
@@ -91,6 +111,7 @@ async function startWhatsApp(sessionId = 'default') {
                 const db = mongoClient.db('whatsapp_bot');
                 authCollection = db.collection('auth_session');
                 logsCollection = db.collection('keyword_logs');
+                societiesCollection = db.collection('societies');
             }
 
             // Check if session is older than the configured limit
@@ -136,6 +157,12 @@ async function startWhatsApp(sessionId = 'default') {
         auth: state,
         printQRInTerminal: true,
         logger: pino({ level: 'silent' }),
+        getMessage: async (key) => {
+            if (pollCache.has(key.id)) {
+                return pollCache.get(key.id);
+            }
+            return { conversation: 'unknown message' };
+        }
     });
 
     sessions.set(sessionId, sock);
@@ -191,22 +218,161 @@ async function startWhatsApp(sessionId = 'default') {
             if (processedMessages.size > 10000) processedMessages.clear();
 
             const fromMe = msg.key.fromMe;
-            const textMessage = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-
-            if (!textMessage) continue;
-            const textLower = textMessage.toLowerCase();
             const remoteJid = msg.key.remoteJid;
             const actualRemoteJid = msg.key.remoteJidAlt || remoteJid;
-
             const myJid = sock.user.id.replace(/:.*@/, '@');
             const isMessageToMyself = (actualRemoteJid === myJid);
 
-            if (fromMe && !textLower.startsWith('!') && !isMessageToMyself) continue;
+            // Handle poll update messages first
+            if (msg.message.pollUpdateMessage) {
+                const pollId = msg.message.pollUpdateMessage.pollCreationMessageKey.id;
+                if (pollCache.has(pollId)) {
+                    const cached = pollCache.get(pollId);
+                    cached.updates.push(msg);
 
-            // Only allow report generation when the user texts their own number (Message Yourself)
-            const isAdminCommand = isMessageToMyself;
+                    try {
+                        const aggregated = getAggregateVotesInPollMessage({
+                            message: cached.originalMessage.message,
+                            pollUpdates: cached.updates
+                        });
+
+                        // Clear existing timer
+                        if (pollTimers.has(pollId)) {
+                            clearTimeout(pollTimers.get(pollId));
+                        }
+
+                        // Set new 10s timer
+                        const timer = setTimeout(async () => {
+                            pollTimers.delete(pollId);
+                            const userJid = msg.key.participant || msg.key.remoteJid;
+                            
+                            const selectedOptionNames = aggregated
+                                .filter(opt => opt.voters.includes(userJid))
+                                .map(opt => opt.name);
+
+                            if (selectedOptionNames.length > 0) {
+                                console.log(`Sending media for selected options: ${selectedOptionNames.join(', ')} to ${userJid}`);
+                                const society = await societiesCollection.findOne({ name: cached.societyName });
+                                if (society) {
+                                    for (const optionName of selectedOptionNames) {
+                                        const opt = society.options.find(o => o.name === optionName);
+                                        if (opt) {
+                                            await sock.sendMessage(userJid, { text: `Here are the details for ${opt.name}:` });
+                                            for (const img of opt.images) {
+                                                await sock.sendMessage(userJid, { image: { url: img }, caption: opt.name });
+                                            }
+                                            for (const vid of opt.videos) {
+                                                await sock.sendMessage(userJid, { video: { url: vid }, caption: opt.name });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }, 10000);
+                        pollTimers.set(pollId, timer);
+                    } catch (err) {
+                        console.error('Error aggregating poll votes:', err);
+                    }
+                }
+                continue;
+            }
+
+            // Extract text/caption
+            const textMessage = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.videoMessage?.caption || "";
+            const textLower = textMessage.toLowerCase();
 
             // Admin commands
+            const isAdminCommand = isMessageToMyself;
+
+            if (isAdminCommand) {
+                let state = adminState.get(actualRemoteJid);
+
+                if (textLower === '!addsociety') {
+                    adminState.set(actualRemoteJid, { step: 'awaiting_name' });
+                    await sock.sendMessage(remoteJid, { text: "What is the name of the society?" });
+                    continue;
+                } else if (textLower === '!listsocieties') {
+                    const societies = await societiesCollection.find({}).toArray();
+                    if (societies.length === 0) {
+                        await sock.sendMessage(remoteJid, { text: "No societies found." });
+                    } else {
+                        const list = societies.map(s => s.name).join('\n');
+                        await sock.sendMessage(remoteJid, { text: `Societies:\n${list}` });
+                    }
+                    continue;
+                } else if (textLower.startsWith('!delsociety ')) {
+                    const name = textLower.replace('!delsociety ', '').trim();
+                    const result = await societiesCollection.deleteOne({ name });
+                    if (result.deletedCount > 0) {
+                        await sock.sendMessage(remoteJid, { text: `Society '${name}' deleted.` });
+                    } else {
+                        await sock.sendMessage(remoteJid, { text: `Society '${name}' not found.` });
+                    }
+                    continue;
+                }
+
+                if (state) {
+                    if (textLower === 'cancel') {
+                        adminState.delete(actualRemoteJid);
+                        await sock.sendMessage(remoteJid, { text: "Operation cancelled." });
+                        continue;
+                    }
+
+                    if (state.step === 'awaiting_name') {
+                        state.societyName = textLower.trim();
+                        state.options = [];
+                        state.step = 'awaiting_option_name';
+                        await sock.sendMessage(remoteJid, { text: `Society '${state.societyName}' initialized. Send an option name and price (e.g., '2BHK - 50 Lac'), or type 'done' to finish.` });
+                        continue;
+                    } else if (state.step === 'awaiting_option_name') {
+                        if (textLower === 'done') {
+                            if (state.options.length > 0) {
+                                await societiesCollection.updateOne({ name: state.societyName }, { $set: { name: state.societyName, options: state.options } }, { upsert: true });
+                                await sock.sendMessage(remoteJid, { text: `Society '${state.societyName}' saved successfully!` });
+                            } else {
+                                await sock.sendMessage(remoteJid, { text: `No options added. Operation cancelled.` });
+                            }
+                            adminState.delete(actualRemoteJid);
+                        } else {
+                            state.currentOption = { name: textMessage.trim(), images: [], videos: [] };
+                            state.step = 'awaiting_media';
+                            await sock.sendMessage(remoteJid, { text: `Option '${state.currentOption.name}' created. Now, send all photos and videos for this option. Type 'done' when you have sent all media.` });
+                        }
+                        continue;
+                    } else if (state.step === 'awaiting_media') {
+                        if (textLower === 'done') {
+                            state.options.push(state.currentOption);
+                            state.step = 'awaiting_option_name';
+                            await sock.sendMessage(remoteJid, { text: `Media saved for '${state.currentOption.name}'. Send the next option (e.g., '3BHK - 80 Lac') or type 'done' to finish.` });
+                        } else if (msg.message.imageMessage || msg.message.videoMessage) {
+                            try {
+                                await sock.sendMessage(remoteJid, { text: `Uploading media...` });
+                                const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }) });
+                                const isImage = !!msg.message.imageMessage;
+                                const mimetype = isImage ? msg.message.imageMessage.mimetype : msg.message.videoMessage.mimetype;
+                                const ext = isImage ? 'jpeg' : 'mp4';
+                                const filename = `upload.${ext}`;
+                                
+                                const url = await uploadToCatbox(buffer, mimetype, filename);
+                                if (isImage) {
+                                    state.currentOption.images.push(url);
+                                } else {
+                                    state.currentOption.videos.push(url);
+                                }
+                                await sock.sendMessage(remoteJid, { text: `Uploaded successfully: ${url}` });
+                            } catch (err) {
+                                console.error('Upload error:', err);
+                                await sock.sendMessage(remoteJid, { text: `Failed to upload media: ${err.message}` });
+                            }
+                        } else {
+                            await sock.sendMessage(remoteJid, { text: `Please send an image or video, or type 'done'.` });
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            // Admin reports
             if (isAdminCommand && (textLower.startsWith('!report') || textLower.startsWith('!range'))) {
                 let startDate = null;
                 let endDate = null;
@@ -269,16 +435,52 @@ async function startWhatsApp(sessionId = 'default') {
 
             let matchedKeyword = null;
 
-            if (textLower.includes('hello! can i get more info on this?')) {
-                matchedKeyword = 'Hello! Can I get more info on this?';
-                console.log(`[${sessionId}] Sending auto-reply to ${remoteJid}...`);
-                
-                const pushName = msg.pushName || 'Sir/Madam';
-                const defaultMsg = 'Hello {{name}}, Raghav this side. Which size are you looking for?';
-                let replyText = sessionAutoReplies.get(sessionId) || process.env.AUTO_REPLY_MESSAGE || defaultMsg;
-                replyText = replyText.replace(/{{name}}/g, pushName);
-                
-                await sock.sendMessage(remoteJid, { text: replyText });
+            // Keyword Matching for Societies
+            if (textLower && societiesCollection) {
+                const societies = await societiesCollection.find({}).toArray();
+                let matchedSociety = null;
+                for (const soc of societies) {
+                    // Check if the message contains the society name
+                    if (textLower.includes(`hello! can i get more info on ${soc.name.toLowerCase()}`)) {
+                        matchedSociety = soc;
+                        break;
+                    }
+                }
+
+                if (matchedSociety) {
+                    matchedKeyword = `Hello! Can I get more info on ${matchedSociety.name}`;
+                    
+                    const pollName = `Select options for ${matchedSociety.name}`;
+                    const pollValues = matchedSociety.options.map(o => o.name);
+                    
+                    const pollMsg = await sock.sendMessage(remoteJid, {
+                        poll: {
+                            name: pollName,
+                            values: pollValues,
+                            selectableCount: 0 // allow multiple
+                        }
+                    });
+
+                    // Cache it for decryption
+                    pollCache.set(pollMsg.key.id, {
+                        originalMessage: pollMsg,
+                        updates: [],
+                        societyName: matchedSociety.name
+                    });
+
+                    console.log(`Sent poll for ${matchedSociety.name} to ${remoteJid}`);
+                } else if (textLower.includes('hello! can i get more info on this?')) {
+                    // Fallback to the old logic if no society was found but they used the generic prompt
+                    matchedKeyword = 'Hello! Can I get more info on this?';
+                    console.log(`[${sessionId}] Sending auto-reply to ${remoteJid}...`);
+                    
+                    const pushName = msg.pushName || 'Sir/Madam';
+                    const defaultMsg = 'Hello {{name}}, Raghav this side. Which size are you looking for?';
+                    let replyText = sessionAutoReplies.get(sessionId) || process.env.AUTO_REPLY_MESSAGE || defaultMsg;
+                    replyText = replyText.replace(/{{name}}/g, pushName);
+                    
+                    await sock.sendMessage(remoteJid, { text: replyText });
+                }
             }
 
             if (matchedKeyword && logsCollection) {
@@ -296,6 +498,7 @@ async function startWhatsApp(sessionId = 'default') {
             }
         }
     });
+
 }
 
 // API: Keep service alive

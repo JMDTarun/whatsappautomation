@@ -60,7 +60,7 @@ async function generateExcelReport(sessionId, startDateString, endDateString) {
     const worksheet = workbook.addWorksheet('Keyword Matches');
 
     worksheet.columns = [
-        { header: 'Session ID', key: 'sessionId', width: 20 },
+        { header: 'Source Number', key: 'sessionId', width: 20 },
         { header: 'Date & Time', key: 'timestamp', width: 25 },
         { header: 'Phone Number', key: 'number', width: 20 },
         { header: 'Society', key: 'societyName', width: 30 },

@@ -12,6 +12,7 @@
   "description": "",
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "baileys-antiban": "^4.10.0",
     "cloudinary": "^2.10.0",
     "dotenv": "^17.4.2",
     "exceljs": "^4.4.0",

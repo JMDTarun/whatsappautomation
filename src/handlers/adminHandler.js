@@ -4,6 +4,7 @@ import { getDBCollections } from '../config/db.js';
 import { sendMessageWithAntiBan } from '../services/antibanService.js';
 import { compressPDF, uploadToCloudinary } from '../utils/mediaUtils.js';
 import { generateExcelReport } from '../utils/reportGenerator.js';
+import { buildSocietyQuery, getBotNumberInfo, extractPhoneNumber } from '../utils/phoneUtils.js';
 
 const adminState = new Map();
 const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
@@ -122,52 +123,23 @@ export async function handleAdminMessage(sessionId, sock, msg, textMessage, text
     if (cmd.startsWith('!listsocieties')) {
         if (societiesCollection) {
             const args = textMessage.substring('!listsocieties'.length).trim();
-            const currentBotNumber = sock.user?.id ? sock.user.id.replace(/\D/g, '') : sessionId.replace(/\D/g, '');
+            const botInfo = getBotNumberInfo(sock, sessionId);
+            const query = buildSocietyQuery(args, sock, sessionId);
 
-            let query = {};
             let headerText = '';
-
             if (args.toLowerCase() === 'all') {
-                query = {};
                 headerText = '*All Registered Societies (All Numbers):*\n\n';
             } else if (args.length > 0) {
-                const searchNum = args.replace(/\D/g, '');
-                if (searchNum) {
-                    query = {
-                        $or: [
-                            { number: searchNum },
-                            { number: { $regex: searchNum, $options: 'i' } },
-                            { sessionId: args },
-                            { sessionId: searchNum }
-                        ]
-                    };
-                    headerText = `*Registered Societies for Number ${searchNum}:*\n\n`;
-                } else {
-                    query = {
-                        $or: [
-                            { sessionId: args }
-                        ]
-                    };
-                    headerText = `*Registered Societies for Session ${args}:*\n\n`;
-                }
+                headerText = `*Registered Societies matching '${args}':*\n\n`;
             } else {
-                // Default: query for current bot number/session or unassigned societies
-                query = {
-                    $or: [
-                        { number: currentBotNumber },
-                        { sessionId: sessionId },
-                        { sessionId: currentBotNumber },
-                        { number: { $exists: false } },
-                        { sessionId: { $exists: false } }
-                    ]
-                };
-                headerText = `*Registered Societies for Number ${currentBotNumber || sessionId}:*\n\n`;
+                headerText = `*Registered Societies for Number ${botInfo.cleanNumber || sessionId}:*\n\n`;
             }
 
             const list = await societiesCollection.find(query).toArray();
             if (list.length === 0) {
-                const searchInfo = args ? ` matching '${args}'` : ` for number ${currentBotNumber || sessionId}`;
-                await sendMessageWithAntiBan(sessionId, sock, targetJid, { text: `No societies found${searchInfo}.` }, true);
+                const searchInfo = args ? ` matching '${args}'` : ` for number ${botInfo.cleanNumber || sessionId}`;
+                const tipMessage = args.toLowerCase() === 'all' ? '' : '\n\n💡 *Tip:* Send `!listsocieties all` to view all registered societies across all numbers/sessions.';
+                await sendMessageWithAntiBan(sessionId, sock, targetJid, { text: `No societies found${searchInfo}.${tipMessage}` }, true);
             } else {
                 let msgText = headerText;
                 list.forEach((s, idx) => {
@@ -266,7 +238,7 @@ export async function handleAdminMessage(sessionId, sock, msg, textMessage, text
             if (cmd === 'done') {
                 if (state.options.length > 0) {
                     if (societiesCollection) {
-                        const currentBotNumber = sock.user?.id ? sock.user.id.replace(/\D/g, '') : sessionId.replace(/\D/g, '');
+                        const botInfo = getBotNumberInfo(sock, sessionId);
                         await societiesCollection.updateOne(
                             { name: state.societyName },
                             {
@@ -275,7 +247,7 @@ export async function handleAdminMessage(sessionId, sock, msg, textMessage, text
                                     options: state.options,
                                     brochure: state.brochure,
                                     sessionId: sessionId,
-                                    number: currentBotNumber
+                                    number: botInfo.cleanNumber
                                 }
                             },
                             { upsert: true }

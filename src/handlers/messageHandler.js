@@ -3,6 +3,7 @@ import { getOrCreateAntiBan } from '../config/antibanConfig.js';
 import { queueOutboundMessage } from '../services/queueService.js';
 import { getAutoReply } from '../services/whatsappService.js';
 import { handleAdminMessage, isAdminUser } from './adminHandler.js';
+import { buildSocietyQuery } from '../utils/phoneUtils.js';
 
 const activeLists = new Map();
 
@@ -152,8 +153,8 @@ export async function handleIncomingMessage(sessionId, sock, msg) {
         if (infoOnMatch) {
             const rawTarget = infoOnMatch[1].trim().replace(/\?$/, '').trim(); // e.g. "cherry county" or "this"
 
-            const pushName = msg.pushName || 'Sir/Madam';
-            const configuredMsg = getAutoReply(sessionId) || process.env.AUTO_REPLY_MESSAGE || 'Hello {{name}}, Which size are you looking for?';
+            const pushName = 'Sir/Mam';
+            const configuredMsg = getAutoReply(sessionId) || process.env.AUTO_REPLY_MESSAGE || 'Hello Sir/Mam, Raghav this side. Which size are you looking for?';
 
             if (rawTarget === 'this') {
                 matchedKeyword = 'Hello! Can I get more info on this?';
@@ -163,16 +164,8 @@ export async function handleIncomingMessage(sessionId, sock, msg) {
                 await queueOutboundMessage(sessionId, actualRemoteJid, { text: replyText });
             } else {
                 // Dynamically find society from DB matching extracted target for current session/number
-                const currentBotNumber = sock.user?.id ? sock.user.id.replace(/\D/g, '') : sessionId.replace(/\D/g, '');
-                const societies = await societiesCollection.find({
-                    $or: [
-                        { number: currentBotNumber },
-                        { sessionId: sessionId },
-                        { sessionId: currentBotNumber },
-                        { number: { $exists: false } },
-                        { sessionId: { $exists: false } }
-                    ]
-                }).toArray();
+                const query = buildSocietyQuery('', sock, sessionId);
+                const societies = await societiesCollection.find(query).toArray();
                 matchedSociety = societies.find(s => s.name.toLowerCase() === rawTarget.toLowerCase() || rawTarget.toLowerCase().includes(s.name.toLowerCase()));
 
                 const extractedSocietyName = matchedSociety ? matchedSociety.name : rawTarget;

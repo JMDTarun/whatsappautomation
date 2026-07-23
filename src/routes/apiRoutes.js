@@ -4,6 +4,7 @@ import { getDBCollections } from '../config/db.js';
 import { getAntiBansMap } from '../config/antibanConfig.js';
 import { sendMessageWithAntiBan } from '../services/antibanService.js';
 import { generateExcelReport } from '../utils/reportGenerator.js';
+import { extractPhoneNumber, buildSocietyQuery } from '../utils/phoneUtils.js';
 import {
     getSession,
     getConnectionStatus,
@@ -117,7 +118,7 @@ router.post('/autoreply/:sessionId', async (req, res) => {
 // API: Get Auto-Reply Message per session
 router.get('/autoreply/:sessionId', (req, res) => {
     const { sessionId } = req.params;
-    const message = getAutoReply(sessionId) || process.env.AUTO_REPLY_MESSAGE || 'Hello {{name}}, Raghav this side. Which size are you looking for?';
+    const message = getAutoReply(sessionId) || process.env.AUTO_REPLY_MESSAGE || 'Hello Sir/Mam, Raghav this side. Which size are you looking for?';
     res.json({ sessionId, message });
 });
 
@@ -263,15 +264,7 @@ router.get('/societies', async (req, res) => {
         const { number, sessionId } = req.query;
         let query = {};
         if (number || sessionId) {
-            const cleanNum = (number || sessionId).replace(/\D/g, '');
-            query = {
-                $or: [
-                    { number: cleanNum || number },
-                    { number: { $regex: cleanNum || number, $options: 'i' } },
-                    { sessionId: sessionId || number },
-                    { sessionId: cleanNum }
-                ]
-            };
+            query = buildSocietyQuery(number || sessionId, null, sessionId || '');
         }
         const societies = await societiesCollection.find(query).toArray();
         res.json({ success: true, count: societies.length, societies });
@@ -291,7 +284,7 @@ router.post('/societies', async (req, res) => {
         if (!name) {
             return res.status(400).json({ error: 'Society name is required.' });
         }
-        const cleanNum = number ? number.replace(/\D/g, '') : sessionId.replace(/\D/g, '');
+        const cleanNum = number ? extractPhoneNumber(number) : extractPhoneNumber(sessionId);
         await societiesCollection.updateOne(
             { name },
             { $set: { name, options, brochure, sessionId, number: cleanNum } },

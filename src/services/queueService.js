@@ -1,35 +1,9 @@
 import { getDBCollections } from '../config/db.js';
 import { sendMessageWithAntiBan } from './antibanService.js';
 import { getSession, getConnectionStatus } from './whatsappService.js';
+import { calculateScheduledTime, isNightTimeIST } from '../utils/timeUtils.js';
 
-export function calculateScheduledTime(customDelayMs = null) {
-    if (customDelayMs !== null && customDelayMs >= 0) {
-        return new Date(Date.now() + customDelayMs);
-    }
-
-    const now = new Date();
-    const currentHour = now.getHours(); // 0-23
-    const isNightTime = (currentHour >= 21 || currentHour < 7); // 09:00 PM to 07:00 AM
-
-    if (isNightTime) {
-        // Schedule for next morning between 07:00 AM and 08:30 AM
-        const nextMorning = new Date(now);
-        if (currentHour >= 21) {
-            nextMorning.setDate(nextMorning.getDate() + 1);
-        }
-        nextMorning.setHours(7, 0, 0, 0);
-
-        // Random offset between 0 and 90 minutes (07:00 AM to 08:30 AM)
-        const randomMorningOffsetMs = Math.floor(Math.random() * (90 * 60 * 1000));
-        return new Date(nextMorning.getTime() + randomMorningOffsetMs);
-    } else {
-        // Daytime (07:00 AM to 09:00 PM): 1 to 5 minutes randomized delay
-        const minDayMs = 1 * 60 * 1000;   // 1 minute (60,000 ms)
-        const maxDayMs = 5 * 60 * 1000;   // 5 minutes (300,000 ms)
-        const delayMs = Math.floor(Math.random() * (maxDayMs - minDayMs + 1) + minDayMs);
-        return new Date(now.getTime() + delayMs);
-    }
-}
+export { calculateScheduledTime };
 
 export async function queueOutboundMessage(sessionId, jid, content, customDelayMs = null) {
     const { queueCollection } = getDBCollections();
@@ -50,7 +24,7 @@ export async function queueOutboundMessage(sessionId, jid, content, customDelayM
         });
         const textContent = typeof content === 'string' ? content : (content?.text || content?.caption || content?.fileName || 'media');
         const delaySecs = (delayMs / 1000).toFixed(1);
-        console.log(`[MongoDB Queue] 📅 Scheduled message for ${jid} in ${delaySecs}s at ${scheduledAt.toLocaleTimeString()} (Session: ${sessionId}) | Content: "${textContent}"`);
+        console.log(`[MongoDB Queue] 📅 Scheduled message for ${jid} in ${delaySecs}s at ${scheduledAt.toISOString()} (Session: ${sessionId}) | Content: "${textContent}"`);
     } else {
         console.log(`[Queue Fallback] MongoDB queue not connected, using in-memory delay (${(delayMs / 1000).toFixed(1)}s)...`);
         setTimeout(async () => {
@@ -66,9 +40,8 @@ export async function processOutboundQueue() {
     const { queueCollection } = getDBCollections();
     if (!queueCollection) return;
 
-    // Strict night quiet hours: Do not process outbound queue between 09:00 PM (21) and 07:00 AM (7)
-    const currentHour = new Date().getHours();
-    if (currentHour >= 21 || currentHour < 7) {
+    // Strict night quiet hours: Do not process outbound queue during IST night hours (09:00 PM to 07:30 AM IST)
+    if (isNightTimeIST()) {
         return;
     }
 

@@ -1,6 +1,7 @@
 import { getOrCreateAntiBan } from '../config/antibanConfig.js';
 import { getDBCollections } from '../config/db.js';
 import { contentVariator } from '../utils/contentVariator.js';
+import { calculateScheduledTime, isNightTimeIST } from '../utils/timeUtils.js';
 
 export async function sendMessageWithAntiBan(sessionId, sock, jid, content, skipDelay = false) {
     const antiban = getOrCreateAntiBan(sessionId);
@@ -32,19 +33,10 @@ export async function sendMessageWithAntiBan(sessionId, sock, jid, content, skip
     }
 
     if (!skipDelay) {
-        const now = new Date();
-        const currentHour = now.getHours();
-        const isNightTime = (currentHour >= 21 || currentHour < 7);
-
         let calculatedDelay = 0;
-        if (isNightTime) {
-            const nextMorning = new Date(now);
-            if (currentHour >= 21) {
-                nextMorning.setDate(nextMorning.getDate() + 1);
-            }
-            nextMorning.setHours(7, 0, 0, 0);
-            const randomMorningOffsetMs = Math.floor(Math.random() * (90 * 60 * 1000));
-            calculatedDelay = (nextMorning.getTime() + randomMorningOffsetMs) - now.getTime();
+        if (isNightTimeIST()) {
+            const scheduledAt = calculateScheduledTime();
+            calculatedDelay = scheduledAt.getTime() - Date.now();
         } else {
             const minDayMs = 1 * 60 * 1000;   // 1 minute
             const maxDayMs = 5 * 60 * 1000;   // 5 minutes

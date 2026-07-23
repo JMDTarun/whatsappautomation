@@ -83,11 +83,20 @@ curl -X POST http://localhost:3000/api/send \
 ```
 *(If you omit `sessionId`, it defaults to the `default` session).*
 
-### 8. Keep Server Alive (Ping)
-Use this endpoint with services like UptimeRobot to prevent your free Render server from sleeping.
+### 8. Keep Server Alive (Render / Ping)
+Use any of these endpoints with services like UptimeRobot, cron-job.org, or Render Cron Jobs to prevent your free Render server from sleeping (Render puts free web services to sleep after 15 minutes of inactivity):
+
+- `GET /ping` or `GET /health` or `GET /`
+- `GET /api/ping` or `GET /api/health`
+
+Example cURL:
 ```bash
 curl -X GET http://localhost:3000/ping
 ```
+
+**Automatic Self-Ping on Render:**
+- Render automatically sets the `RENDER_EXTERNAL_URL` environment variable on hosted web services. When detected, the server automatically pings itself every 10 minutes to remain active.
+- You can also manually set `PING_URL` (e.g. `PING_URL=https://your-app.onrender.com/ping`) in your `.env` file for self-pinging on custom domains or environments.
 
 *Note: The server forces an automatic re-login every 30 days to ensure session stability. You will need to re-scan the QR codes when this happens.*
 

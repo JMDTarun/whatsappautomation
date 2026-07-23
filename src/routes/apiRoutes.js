@@ -17,6 +17,16 @@ import {
 
 const router = express.Router();
 
+// API: Health / Ping Check endpoint (to keep server alive on Render / UptimeRobot)
+router.get(['/ping', '/health'], (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        message: 'Server is active and healthy',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
+
 // API: Initialize a new session
 router.post('/session', (req, res) => {
     const { sessionId } = req.body;

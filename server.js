@@ -36,6 +36,18 @@ process.on('uncaughtException', (err) => {
 const app = express();
 app.use(express.json());
 
+// Keep-alive / Health check endpoints for Render, UptimeRobot, or self-pinging
+const healthHandler = (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        message: 'Server is active and healthy',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+};
+
+app.get(['/', '/ping', '/health'], healthHandler);
+
 // Mount API routes
 app.use('/api', apiRoutes);
 
@@ -43,6 +55,18 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, async () => {
     console.log(`🚀 Server API is running on http://localhost:${PORT}`);
+
+    // Auto self-ping mechanism if deployed on Render (RENDER_EXTERNAL_URL) or if PING_URL is set
+    const keepAliveUrl = process.env.RENDER_EXTERNAL_URL || process.env.PING_URL || process.env.KEEP_ALIVE_URL;
+    if (keepAliveUrl) {
+        const targetUrl = keepAliveUrl.endsWith('/ping') ? keepAliveUrl : `${keepAliveUrl.replace(/\/$/, '')}/ping`;
+        console.log(`📡 Render Keep-Alive active: Auto self-pinging ${targetUrl} every 10 minutes.`);
+        setInterval(() => {
+            fetch(targetUrl)
+                .then(res => console.log(`[Keep-Alive] Self-ping to ${targetUrl} status: ${res.status}`))
+                .catch(err => console.warn(`[Keep-Alive] Self-ping failed:`, err.message));
+        }, 10 * 60 * 1000);
+    }
 
     // Connect to MongoDB
     await connectDB();

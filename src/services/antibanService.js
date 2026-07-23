@@ -26,36 +26,71 @@ export async function sendMessageWithAntiBan(sessionId, sock, jid, content, skip
 
     const result = await antiban.beforeSend(jid, textContent);
 
-    if (!result.allowed) {
+    if (!result.allowed && !skipDelay) {
         console.warn(`[AntiBan - Session ${sessionId}] Message blocked for ${jid}: ${result.reason || 'Blocked by health/limits'}`);
         return { allowed: false, reason: result.reason || 'Blocked by AntiBan' };
     }
 
     if (!skipDelay) {
-        const currentHour = new Date().getHours();
-        const isNightTime = (currentHour >= 22 || currentHour < 7);
+        const now = new Date();
+        const currentHour = now.getHours();
+        const isNightTime = (currentHour >= 21 || currentHour < 7);
 
         let calculatedDelay = 0;
         if (isNightTime) {
-            const minNightMs = 3 * 60 * 60 * 1000;  // 3 hours
-            const maxNightMs = 4 * 60 * 60 * 1000;  // 4 hours
-            calculatedDelay = Math.max(result.delayMs || 0, Math.floor(Math.random() * (maxNightMs - minNightMs + 1) + minNightMs));
+            const nextMorning = new Date(now);
+            if (currentHour >= 21) {
+                nextMorning.setDate(nextMorning.getDate() + 1);
+            }
+            nextMorning.setHours(7, 0, 0, 0);
+            const randomMorningOffsetMs = Math.floor(Math.random() * (90 * 60 * 1000));
+            calculatedDelay = (nextMorning.getTime() + randomMorningOffsetMs) - now.getTime();
         } else {
-            const minDayMs = 5 * 60 * 1000;   // 5 minutes
-            const maxDayMs = 15 * 60 * 1000;  // 15 minutes
+            const minDayMs = 1 * 60 * 1000;   // 1 minute
+            const maxDayMs = 5 * 60 * 1000;   // 5 minutes
             calculatedDelay = Math.max(result.delayMs || 0, Math.floor(Math.random() * (maxDayMs - minDayMs + 1) + minDayMs));
         }
 
         if (calculatedDelay > 0) {
             await new Promise((resolve) => setTimeout(resolve, calculatedDelay));
         }
-    } else if (result.delayMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, result.delayMs));
     }
 
     try {
-        const sentMsg = await sock.sendMessage(jid, finalContent);
+        if (sock?.sendPresenceUpdate) {
+            await sock.sendPresenceUpdate('available').catch(() => {});
+            await sock.sendPresenceUpdate('composing', jid).catch(() => {});
+        }
+
+        const sentMsg = await sock.sendMessage(jid, finalContent, {});
         antiban.afterSend(jid, textContent, sentMsg?.key?.id);
+
+        const replySnippet = textContent || (typeof finalContent === 'string' ? finalContent : (finalContent?.text || finalContent?.caption || finalContent?.fileName || 'media'));
+        console.log(`[AntiBan Outbound] 📤 Reply Sent to ${jid}: "${replySnippet}"`);
+
+        // Human Presence Management: Go offline if no messages scheduled in the next 60 seconds
+        if (sock?.sendPresenceUpdate) {
+            await sock.sendPresenceUpdate('paused', jid).catch(() => {});
+            setTimeout(async () => {
+                try {
+                    const { queueCollection } = getDBCollections();
+                    if (queueCollection) {
+                        const dueSoon = new Date(Date.now() + 60 * 1000);
+                        const pendingCount = await queueCollection.countDocuments({
+                            sessionId,
+                            status: 'pending',
+                            scheduledAt: { $lte: dueSoon }
+                        });
+                        if (pendingCount === 0) {
+                            await sock.sendPresenceUpdate('unavailable').catch(() => {});
+                            console.log(`[AntiBan Presence] 🌙 Presence set to offline for idle session ${sessionId}`);
+                        }
+                    } else {
+                        await sock.sendPresenceUpdate('unavailable').catch(() => {});
+                    }
+                } catch (e) { }
+            }, 4000);
+        }
 
         if (authCollection) {
             authCollection.updateOne(

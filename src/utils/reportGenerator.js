@@ -9,9 +9,18 @@ export async function generateExcelReport(sessionId, startDateString, endDateStr
 
     let query = {};
 
-    // Filter by sessionId if provided
-    if (sessionId) {
-        query.sessionId = sessionId;
+    // Filter by sessionId if explicitly specified and not 'all'
+    if (sessionId && sessionId !== 'all') {
+        const cleanSess = sessionId.replace(/\D/g, '');
+        if (cleanSess) {
+            query.$or = [
+                { sessionId: sessionId },
+                { sessionId: cleanSess },
+                { number: { $regex: cleanSess, $options: 'i' } }
+            ];
+        } else {
+            query.sessionId = sessionId;
+        }
     }
 
     if (startDateString && endDateString) {
@@ -19,15 +28,24 @@ export async function generateExcelReport(sessionId, startDateString, endDateStr
             $gte: startDateString,
             $lte: endDateString
         };
-    } else if (startDateString) {
+    } else if (startDateString && startDateString !== 'all') {
         query.dateString = startDateString;
-    } else {
+    } else if (!startDateString) {
         const today = new Date().toISOString().split('T')[0];
         query.dateString = today;
         startDateString = today;
     }
+    // If startDateString === 'all', no dateString query filter is added.
 
-    const records = await logsCollection.find(query).toArray();
+    let records = await logsCollection.find(query).toArray();
+
+    // Fallback: if session-specific query returns 0 records, try querying across all sessions for the date range
+    if (records.length === 0 && sessionId && sessionId !== 'all') {
+        const fallbackQuery = { ...query };
+        delete fallbackQuery.$or;
+        delete fallbackQuery.sessionId;
+        records = await logsCollection.find(fallbackQuery).toArray();
+    }
 
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Keyword Matches');
@@ -42,9 +60,10 @@ export async function generateExcelReport(sessionId, startDateString, endDateStr
 
     records.forEach(record => {
         const plainNumber = record.number ? record.number.split('@')[0] : '';
+        const dateFormatted = record.timestamp ? new Date(record.timestamp).toLocaleString() : 'N/A';
         worksheet.addRow({
-            sessionId: record.sessionId || 'default',
-            timestamp: new Date(record.timestamp).toLocaleString(),
+            sessionId: record.sessionId || sessionId || 'default',
+            timestamp: dateFormatted,
             number: plainNumber,
             societyName: record.societyName || 'N/A',
             selectedOptions: record.selectedOptions || 'None'

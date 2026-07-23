@@ -10,10 +10,57 @@ import {
     getQR,
     getAutoReply,
     setAutoReply,
-    deleteQR
+    deleteQR,
+    startWhatsApp
 } from '../services/whatsappService.js';
 
 const router = express.Router();
+
+// API: Initialize a new session
+router.post('/session', (req, res) => {
+    const { sessionId } = req.body;
+    if (!sessionId) {
+        return res.status(400).json({ error: 'sessionId is required' });
+    }
+
+    const status = getConnectionStatus(sessionId);
+    if (status === 'connected' || status === 'qr_ready' || status === 'initializing') {
+        return res.json({
+            success: true,
+            sessionId,
+            status,
+            message: `Session ${sessionId} is already active (status: ${status}). Check QR at GET /api/qr/${sessionId}`
+        });
+    }
+
+    startWhatsApp(sessionId);
+    res.json({ success: true, message: `Session ${sessionId} started. Get QR at /api/qr/${sessionId}` });
+});
+
+// API: Update auto-reply message for a specific session
+router.post('/session/message', async (req, res) => {
+    const { sessionId, message } = req.body;
+    if (!sessionId || !message) {
+        return res.status(400).json({ error: 'sessionId and message are required' });
+    }
+
+    setAutoReply(sessionId, message);
+    const { authCollection } = getDBCollections();
+
+    if (authCollection) {
+        try {
+            await authCollection.updateOne(
+                { _id: `session_metadata_${sessionId}` },
+                { $set: { autoReplyMessage: message } },
+                { upsert: true }
+            );
+        } catch (err) {
+            console.error(`Failed to save auto reply for ${sessionId}:`, err);
+        }
+    }
+
+    res.json({ success: true, message: `Auto reply message updated for session ${sessionId}` });
+});
 
 // API: Check session status
 router.get('/status/:sessionId', (req, res) => {
@@ -203,6 +250,75 @@ router.post('/send', async (req, res) => {
     } catch (error) {
         console.error('Error sending message via API:', error);
         res.status(500).json({ error: 'Failed to send message.' });
+    }
+});
+
+// API: Get societies (optional ?number= or ?sessionId= filter)
+router.get('/societies', async (req, res) => {
+    const { societiesCollection } = getDBCollections();
+    if (!societiesCollection) {
+        return res.status(500).json({ error: 'Database not connected' });
+    }
+    try {
+        const { number, sessionId } = req.query;
+        let query = {};
+        if (number || sessionId) {
+            const cleanNum = (number || sessionId).replace(/\D/g, '');
+            query = {
+                $or: [
+                    { number: cleanNum || number },
+                    { number: { $regex: cleanNum || number, $options: 'i' } },
+                    { sessionId: sessionId || number },
+                    { sessionId: cleanNum }
+                ]
+            };
+        }
+        const societies = await societiesCollection.find(query).toArray();
+        res.json({ success: true, count: societies.length, societies });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Save / Upsert society with optional number / sessionId
+router.post('/societies', async (req, res) => {
+    const { societiesCollection } = getDBCollections();
+    if (!societiesCollection) {
+        return res.status(500).json({ error: 'Database not connected' });
+    }
+    try {
+        const { name, options = [], brochure = null, number, sessionId = 'default' } = req.body;
+        if (!name) {
+            return res.status(400).json({ error: 'Society name is required.' });
+        }
+        const cleanNum = number ? number.replace(/\D/g, '') : sessionId.replace(/\D/g, '');
+        await societiesCollection.updateOne(
+            { name },
+            { $set: { name, options, brochure, sessionId, number: cleanNum } },
+            { upsert: true }
+        );
+        res.json({ success: true, message: `Society '${name}' saved successfully.` });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Delete society by name
+router.delete('/societies/:name', async (req, res) => {
+    const { societiesCollection } = getDBCollections();
+    if (!societiesCollection) {
+        return res.status(500).json({ error: 'Database not connected' });
+    }
+    try {
+        const name = req.params.name;
+        const result = await societiesCollection.deleteOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } });
+        if (result.deletedCount > 0) {
+            res.json({ success: true, message: `Society '${name}' deleted.` });
+        } else {
+            res.status(404).json({ error: `Society '${name}' not found.` });
+        }
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 

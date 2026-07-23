@@ -16,23 +16,25 @@ export function getOrCreateCircuitBreaker(sessionId) {
 export function getOrCreateAntiBan(sessionId, warmUpState = null) {
     if (!antiBans.has(sessionId)) {
         const antiban = new AntiBan({
-            maxPerMinute: 3,                 // Ultra-safe: Max 3 messages per minute
-            maxPerHour: 30,                  // Ultra-safe: Max 30 messages per hour
-            maxPerDay: 250,                  // Ultra-safe: Max 250 messages per day
+            maxPerMinute: 10,                 // Max 10 messages per minute
+            maxPerHour: 100,                 // Max 100 messages per hour
+            maxPerDay: 500,                  // Max 500 messages per day
             minDelayMs: 2500,                // 2.5s minimum human typing/reading delay
             maxDelayMs: 8000,                // 8s maximum human typing/reading delay
             newChatDelayMs: 12000,           // 12s extra delay for first-time contacts
             maxIdenticalMessages: 2,         // Maximum 2 identical message repetitions
             identicalMessageWindowMs: 15 * 60 * 1000, // 15-minute identical message window
-            warmupDays: 10,                  // Extended 10-day warm-up progression
-            day1Limit: 10,                   // Day 1 limit: 10 messages max
-            growthFactor: 1.2,               // Gradual 1.2x daily volume growth
-            autoPauseAt: 'medium',           // Early auto-pause when health risk hits medium
+            warmupDays: 3,                   // 3-day warm-up progression
+            day1Limit: 200,                  // Day 1 limit: 200 messages
+            warmUp: {
+                day1Limit: 200,
+                warmUpDays: 3,
+                growthFactor: 1.5
+            },
+            growthFactor: 1.5,               // 1.5x daily volume growth
+            autoPauseAt: 'high',             // Auto-pause when health risk hits high
             reconnectThrottle: {
-                enabled: true,
-                rampDurationMs: 10 * 60 * 1000, // 10 minutes (600,000ms) human ramp-up window after reconnection
-                initialRateMultiplier: 0.05,    // Start at 5% rate multiplier immediately after reconnecting
-                rampSteps: 10,                  // 10 gradual steps (1 min per step) back to full speed
+                enabled: false,
             },
             presence: {
                 enabled: true,

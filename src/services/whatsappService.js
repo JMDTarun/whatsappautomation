@@ -1,12 +1,7 @@
 import { makeWASocket, useMultiFileAuthState } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import fs from 'fs';
-import {
-    wrapSocket,
-    generateFingerprint,
-    applyFingerprint,
-    rampPresenceAfterConnect
-} from 'baileys-antiban';
+import { wrapSocket } from 'baileys-antiban';
 
 import useMongoDBAuthState from '../../useMongoDBAuthState.js';
 import { getDBCollections, connectDB } from '../config/db.js';
@@ -46,6 +41,16 @@ export function deleteQR(sessionId) {
 
 export async function startWhatsApp(sessionId = 'default') {
     console.log(`Starting WhatsApp connection for session: ${sessionId}...`);
+
+    // Prevent 405 Connection Replaced conflict: destroy existing socket for this session if running
+    const existingSock = sessions.get(sessionId);
+    if (existingSock) {
+        try {
+            existingSock.ws?.close();
+            existingSock.end?.(undefined);
+        } catch (e) {}
+        sessions.delete(sessionId);
+    }
 
     let state, saveCreds;
     const mongoUri = process.env.MONGODB_URI;
@@ -99,22 +104,17 @@ export async function startWhatsApp(sessionId = 'default') {
     const antiban = getOrCreateAntiBan(sessionId, warmUpState);
     const circuitBreaker = getOrCreateCircuitBreaker(sessionId);
 
-    const fp = generateFingerprint({ seed: sessionId });
-    const socketConfig = applyFingerprint({
+    const rawSock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,
         logger: pino({ level: 'silent' }),
         getMessage: async () => {
             return { conversation: 'unknown message' };
         }
-    }, fp);
+    });
 
-    const rawSock = makeWASocket(socketConfig);
-
-    const sock = wrapSocket(rawSock, undefined, warmUpState, {
+    const sock = wrapSocket(rawSock, antiban.config, warmUpState, {
         deafSession: {
-            enabled: true,
-            timeoutMs: 120_000,
+            enabled: false,
         },
         groupOpGuard: {
             enabled: true,
@@ -153,33 +153,31 @@ export async function startWhatsApp(sessionId = 'default') {
         }
 
         if (connection === 'close') {
+            const wasConnected = (connectionStatus.get(sessionId) === 'connected');
             connectionStatus.set(sessionId, 'disconnected');
             const reason = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.message || 'disconnect';
             antiban.onDisconnect(reason);
 
-            const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== 401;
-            console.log(`Connection closed for session ${sessionId}. Reconnecting: ${shouldReconnect}`);
+            const statusCode = (lastDisconnect?.error)?.output?.statusCode;
+            const isUnauthorized = statusCode === 401;
+            const isConflict = statusCode === 405;
+
+            // Only auto-reconnect if session was actively connected, and not unauthorized/conflict
+            const shouldReconnect = wasConnected && !isUnauthorized && !isConflict;
+            console.log(`Connection closed for session ${sessionId} (Reason: ${reason}). Reconnecting: ${shouldReconnect}`);
 
             if (shouldReconnect) {
-                startWhatsApp(sessionId);
-            } else {
-                console.log(`Logged out from session ${sessionId}. Deleting old session...`);
-
-                if (mongoUri && authCollection) {
-                    await authCollection.deleteMany({ _id: { $regex: new RegExp(`^${sessionId}-`) } });
-                } else {
-                    try {
-                        fs.rmSync(`auth_info_${sessionId}`, { recursive: true, force: true });
-                    } catch (e) { }
-                }
-                startWhatsApp(sessionId);
+                setTimeout(() => {
+                    startWhatsApp(sessionId);
+                }, 5000);
             }
         } else if (connection === 'open') {
-            console.log(`✅ Connected to WhatsApp (Session: ${sessionId})!`);
-            connectionStatus.set(sessionId, 'connected');
-            qrs.delete(sessionId);
-            antiban.onReconnect();
-            rampPresenceAfterConnect(sock).catch(err => console.error(`[AntiBan] Error in rampPresenceAfterConnect for ${sessionId}:`, err));
+            if (connectionStatus.get(sessionId) !== 'connected') {
+                console.log(`✅ Connected to WhatsApp (Session: ${sessionId})!`);
+                connectionStatus.set(sessionId, 'connected');
+                qrs.delete(sessionId);
+                antiban.onReconnect();
+            }
         }
     });
 
@@ -202,18 +200,18 @@ export async function startWhatsApp(sessionId = 'default') {
 }
 
 export async function startupAutoConnect() {
-    console.log('Checking for existing sessions to auto-connect...');
+    console.log('Checking for existing authenticated sessions to auto-connect...');
     const mongoUri = process.env.MONGODB_URI;
-    const sessionIds = new Set(['default']);
+    const sessionIds = new Set();
 
     const collections = await connectDB();
     const authCollection = collections?.authCollection;
 
     if (mongoUri && authCollection) {
         try {
-            const metadataDocs = await authCollection.find({ _id: { $regex: /^session_metadata_/ } }).toArray();
-            for (const doc of metadataDocs) {
-                const id = doc._id.replace('session_metadata_', '');
+            const credsDocs = await authCollection.find({ _id: { $regex: /-creds$/ } }).toArray();
+            for (const doc of credsDocs) {
+                const id = doc._id.replace('-creds', '');
                 if (id) sessionIds.add(id);
             }
         } catch (error) {
@@ -233,8 +231,13 @@ export async function startupAutoConnect() {
         }
     }
 
-    console.log(`Found ${sessionIds.size} session(s) to connect: ${Array.from(sessionIds).join(', ')}`);
-    for (const sessionId of sessionIds) {
-        startWhatsApp(sessionId);
+    if (sessionIds.size === 0) {
+        console.log('No authenticated sessions found to auto-connect. Start new sessions via POST /api/session.');
+    } else {
+        console.log(`Found ${sessionIds.size} authenticated session(s) to connect: ${Array.from(sessionIds).join(', ')}`);
+        for (const sessionId of sessionIds) {
+            startWhatsApp(sessionId);
+            await new Promise(resolve => setTimeout(resolve, 2500));
+        }
     }
 }

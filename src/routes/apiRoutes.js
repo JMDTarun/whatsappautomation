@@ -5,6 +5,7 @@ import { getAntiBansMap } from '../config/antibanConfig.js';
 import { sendMessageWithAntiBan } from '../services/antibanService.js';
 import { generateExcelReport } from '../utils/reportGenerator.js';
 import { extractPhoneNumber, buildSocietyQuery } from '../utils/phoneUtils.js';
+import { getISTDateString } from '../utils/timeUtils.js';
 import {
     getSession,
     getConnectionStatus,
@@ -142,7 +143,7 @@ router.get('/report', async (req, res) => {
             return res.status(404).json({ message: 'No keyword matches found for the given criteria.' });
         }
 
-        const dateSuffix = endDate ? `${startDate}_to_${endDate}` : (startDate || new Date().toISOString().split('T')[0]);
+        const dateSuffix = endDate ? `${startDate}_to_${endDate}` : (startDate || getISTDateString());
         const filename = `Keyword_Report_${sessionId || 'all'}_${dateSuffix}.xlsx`;
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

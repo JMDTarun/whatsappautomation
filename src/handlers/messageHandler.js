@@ -4,6 +4,7 @@ import { queueOutboundMessage } from '../services/queueService.js';
 import { getAutoReply } from '../services/whatsappService.js';
 import { handleAdminMessage, isAdminUser } from './adminHandler.js';
 import { buildSocietyQuery } from '../utils/phoneUtils.js';
+import { getISTDateString } from '../utils/timeUtils.js';
 
 const activeLists = new Map();
 
@@ -114,7 +115,7 @@ export async function handleIncomingMessage(sessionId, sock, msg) {
 
                         if (logsCollection) {
                             const now = new Date();
-                            const dateString = now.toISOString().split('T')[0];
+                            const dateString = getISTDateString(now);
 
                             const existingLog = await logsCollection.findOne({ number: actualRemoteJid, dateString: dateString, societyName: listState.societyName });
 
@@ -146,27 +147,41 @@ export async function handleIncomingMessage(sessionId, sock, msg) {
     let matchedKeyword = null;
     let matchedSociety = null;
 
-    // Exact Pattern Matching: "hello! can i get more info on <society_name / this>?"
-    if (textLower && societiesCollection) {
+    // Rigid Pattern Matching: "hello! can i get more info on <society_name / this>?"
+    if (textLower) {
         const infoOnMatch = textLower.match(/hello!\s*can\s*i\s*get\s*more\s*info\s*on\s*(.+)/i);
 
         if (infoOnMatch) {
-            const rawTarget = infoOnMatch[1].trim().replace(/\?$/, '').trim(); // e.g. "cherry county" or "this"
+            const rawTarget = infoOnMatch[1].trim().replace(/[?!.,;]+$/g, '').trim();
+            const targetClean = rawTarget.toLowerCase();
 
             const pushName = 'Sir/Mam';
             const configuredMsg = getAutoReply(sessionId) || process.env.AUTO_REPLY_MESSAGE || 'Hello Sir/Mam, Raghav this side. Which size are you looking for?';
 
-            if (rawTarget === 'this') {
+            // Fast human response time (5 to 12 seconds) for auto-replies
+            const getAutoReplyDelay = () => Math.floor(Math.random() * (12000 - 5000 + 1) + 5000);
+
+            if (targetClean === 'this' || targetClean === 'it' || targetClean === 'this project') {
                 matchedKeyword = 'Hello! Can I get more info on this?';
-                console.log(`[${sessionId}] Matched exact keyword for ${actualRemoteJid}: "${textMessage}". Queueing auto-reply...`);
+                console.log(`[${sessionId}] Matched keyword for ${actualRemoteJid}: "${textMessage}". Queueing auto-reply...`);
 
                 let replyText = configuredMsg.replace(/{{name}}/g, pushName);
-                await queueOutboundMessage(sessionId, actualRemoteJid, { text: replyText });
+                await queueOutboundMessage(sessionId, actualRemoteJid, { text: replyText }, getAutoReplyDelay());
             } else {
-                // Dynamically find society from DB matching extracted target for current session/number
-                const query = buildSocietyQuery('', sock, sessionId);
-                const societies = await societiesCollection.find(query).toArray();
-                matchedSociety = societies.find(s => s.name.toLowerCase() === rawTarget.toLowerCase() || rawTarget.toLowerCase().includes(s.name.toLowerCase()));
+                let societies = [];
+                if (societiesCollection) {
+                    try {
+                        const query = buildSocietyQuery('', sock, sessionId);
+                        societies = await societiesCollection.find(query).toArray();
+                    } catch (e) {
+                        console.error('Failed to query societies from DB:', e);
+                    }
+                }
+
+                matchedSociety = societies.find(s => {
+                    const sName = s.name.toLowerCase();
+                    return sName === targetClean || targetClean.includes(sName) || sName.includes(targetClean);
+                });
 
                 const extractedSocietyName = matchedSociety ? matchedSociety.name : rawTarget;
                 matchedKeyword = `Hello! Can I get more info on ${extractedSocietyName}`;
@@ -180,7 +195,7 @@ export async function handleIncomingMessage(sessionId, sock, msg) {
                     });
                     combinedMsg += `\nPlease reply with the number of the option you want details for (e.g. 1 or 1, 2).`;
 
-                    await queueOutboundMessage(sessionId, actualRemoteJid, { text: combinedMsg });
+                    await queueOutboundMessage(sessionId, actualRemoteJid, { text: combinedMsg }, getAutoReplyDelay());
 
                     const activeListData = {
                         societyName: matchedSociety.name,
@@ -200,10 +215,9 @@ export async function handleIncomingMessage(sessionId, sock, msg) {
 
                     console.log(`Queued numbered list for ${matchedSociety.name} to ${actualRemoteJid}`);
                 } else {
-                    // Extracted society name from message but not found in DB
-                    console.log(`[${sessionId}] Extracted society "${rawTarget}" from message. Queueing auto-reply...`);
+                    console.log(`[${sessionId}] Extracted target "${rawTarget}" from message. Queueing auto-reply...`);
                     let replyText = configuredMsg.replace(/{{name}}/g, pushName);
-                    await queueOutboundMessage(sessionId, actualRemoteJid, { text: replyText });
+                    await queueOutboundMessage(sessionId, actualRemoteJid, { text: replyText }, getAutoReplyDelay());
                 }
             }
         }
@@ -211,7 +225,7 @@ export async function handleIncomingMessage(sessionId, sock, msg) {
 
     if (matchedKeyword && logsCollection) {
         const now = new Date();
-        const dateString = now.toISOString().split('T')[0];
+        const dateString = getISTDateString(now);
         const societyName = matchedSociety ? matchedSociety.name : 'General / Info Inquiry';
 
         await logsCollection.insertOne({

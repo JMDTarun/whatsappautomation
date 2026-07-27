@@ -34,7 +34,7 @@ export function getOrCreateAntiBan(sessionId, warmUpState = null) {
             growthFactor: 1.5,               // 1.5x daily volume growth
             autoPauseAt: 'high',             // Auto-pause when health risk hits high
             reconnectThrottle: {
-                enabled: false,
+                enabled: true,
             },
             presence: {
                 enabled: true,

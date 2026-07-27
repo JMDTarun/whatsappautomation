@@ -14,6 +14,7 @@ const qrs = new Map();
 const connectionStatus = new Map();
 const processedMessages = new Set();
 const sessionAutoReplies = new Map();
+const reconnectAttempts = new Map();
 
 export function getSession(sessionId) {
     return sessions.get(sessionId);
@@ -153,7 +154,6 @@ export async function startWhatsApp(sessionId = 'default') {
         }
 
         if (connection === 'close') {
-            const wasConnected = (connectionStatus.get(sessionId) === 'connected');
             connectionStatus.set(sessionId, 'disconnected');
             const reason = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.message || 'disconnect';
             antiban.onDisconnect(reason);
@@ -162,20 +162,37 @@ export async function startWhatsApp(sessionId = 'default') {
             const isUnauthorized = statusCode === 401;
             const isConflict = statusCode === 405;
 
-            // Only auto-reconnect if session was actively connected, and not unauthorized/conflict
-            const shouldReconnect = wasConnected && !isUnauthorized && !isConflict;
-            console.log(`Connection closed for session ${sessionId} (Reason: ${reason}). Reconnecting: ${shouldReconnect}`);
+            // Auto-reconnect on socket closes unless session was logged out (401) or replaced (405)
+            const shouldReconnect = !isUnauthorized && !isConflict;
+            console.log(`Connection closed for session ${sessionId} (StatusCode: ${statusCode || 'N/A'}, Reason: ${reason}). Reconnecting: ${shouldReconnect}`);
 
             if (shouldReconnect) {
+                const attempts = (reconnectAttempts.get(sessionId) || 0) + 1;
+                reconnectAttempts.set(sessionId, attempts);
+
+                // Anti-Ban Safe Exponential Backoff with Jitter (15s -> 30s -> 60s -> 2m -> 5m max)
+                const baseDelays = [15000, 30000, 60000, 120000, 300000];
+                const baseDelay = baseDelays[Math.min(attempts - 1, baseDelays.length - 1)];
+
+                // Add ±20% randomized jitter to prevent fixed repetitive timing signatures
+                const jitter = Math.floor(Math.random() * (baseDelay * 0.4)) - (baseDelay * 0.2);
+                const backoffDelay = Math.max(10000, Math.floor(baseDelay + jitter));
+
+                console.log(`[AntiBan Safety] Reconnect attempt #${attempts} for session ${sessionId} scheduled in ${(backoffDelay / 1000).toFixed(1)}s`);
+
                 setTimeout(() => {
-                    startWhatsApp(sessionId);
-                }, 5000);
+                    if (connectionStatus.get(sessionId) !== 'connected') {
+                        console.log(`🔄 Attempting auto-reconnect (attempt #${attempts}) for session ${sessionId}...`);
+                        startWhatsApp(sessionId);
+                    }
+                }, backoffDelay);
             }
         } else if (connection === 'open') {
             if (connectionStatus.get(sessionId) !== 'connected') {
                 console.log(`✅ Connected to WhatsApp (Session: ${sessionId})!`);
                 connectionStatus.set(sessionId, 'connected');
                 qrs.delete(sessionId);
+                reconnectAttempts.set(sessionId, 0);
                 antiban.onReconnect();
             }
         }

@@ -5,6 +5,7 @@ import { sendMessageWithAntiBan } from '../services/antibanService.js';
 import { compressPDF, uploadToCloudinary } from '../utils/mediaUtils.js';
 import { generateExcelReport } from '../utils/reportGenerator.js';
 import { buildSocietyQuery, getBotNumberInfo, extractPhoneNumber } from '../utils/phoneUtils.js';
+import { getISTDateString } from '../utils/timeUtils.js';
 
 const adminState = new Map();
 const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
@@ -58,7 +59,7 @@ export async function handleAdminMessage(sessionId, sock, msg, textMessage, text
                 startDate = 'all';
                 endDate = null;
             } else if (commandArgs === 'today') {
-                startDate = new Date().toISOString().split('T')[0];
+                startDate = getISTDateString();
                 endDate = null;
             } else {
                 const daysMatch = commandArgs.match(/^-?(\d+)\s*days?$/);
@@ -68,8 +69,8 @@ export async function handleAdminMessage(sessionId, sock, msg, textMessage, text
                     const start = new Date();
                     start.setDate(end.getDate() - daysAgo);
 
-                    startDate = start.toISOString().split('T')[0];
-                    endDate = end.toISOString().split('T')[0];
+                    startDate = getISTDateString(start);
+                    endDate = getISTDateString(end);
                 } else if (commandArgs.includes(' to ')) {
                     const dates = commandArgs.split(' to ');
                     startDate = dates[0].trim();
@@ -97,7 +98,7 @@ export async function handleAdminMessage(sessionId, sock, msg, textMessage, text
                 return true;
             }
 
-            const fileNameDate = endDate ? `${startDate}_to_${endDate}` : (startDate || new Date().toISOString().split('T')[0]);
+            const fileNameDate = endDate ? `${startDate}_to_${endDate}` : (startDate || getISTDateString());
 
             await sendMessageWithAntiBan(sessionId, sock, targetJid, {
                 document: Buffer.from(buffer),

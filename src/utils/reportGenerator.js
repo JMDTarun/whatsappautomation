@@ -1,5 +1,6 @@
 import ExcelJS from 'exceljs';
 import { getDBCollections } from '../config/db.js';
+import { getISTDateString } from './timeUtils.js';
 
 export async function generateExcelReport(sessionId, startDateString, endDateString) {
     const { logsCollection } = getDBCollections();
@@ -31,7 +32,7 @@ export async function generateExcelReport(sessionId, startDateString, endDateStr
     } else if (startDateString && startDateString !== 'all') {
         query.dateString = startDateString;
     } else if (!startDateString) {
-        const today = new Date().toISOString().split('T')[0];
+        const today = getISTDateString();
         query.dateString = today;
         startDateString = today;
     }

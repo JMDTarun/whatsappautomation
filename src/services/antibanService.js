@@ -27,25 +27,17 @@ export async function sendMessageWithAntiBan(sessionId, sock, jid, content, skip
 
     const result = await antiban.beforeSend(jid, textContent);
 
-    if (!result.allowed && !skipDelay) {
+    if (!result.allowed) {
         console.warn(`[AntiBan - Session ${sessionId}] Message blocked for ${jid}: ${result.reason || 'Blocked by health/limits'}`);
-        return { allowed: false, reason: result.reason || 'Blocked by AntiBan' };
+        if (!skipDelay) {
+            return { allowed: false, reason: result.reason || 'Blocked by AntiBan' };
+        }
     }
 
-    if (!skipDelay) {
-        let calculatedDelay = 0;
-        if (isNightTimeIST()) {
-            const scheduledAt = calculateScheduledTime();
-            calculatedDelay = scheduledAt.getTime() - Date.now();
-        } else {
-            const minDayMs = 1 * 60 * 1000;   // 1 minute
-            const maxDayMs = 5 * 60 * 1000;   // 5 minutes
-            calculatedDelay = Math.max(result.delayMs || 0, Math.floor(Math.random() * (maxDayMs - minDayMs + 1) + minDayMs));
-        }
-
-        if (calculatedDelay > 0) {
-            await new Promise((resolve) => setTimeout(resolve, calculatedDelay));
-        }
+    if (!skipDelay && result.delayMs && result.delayMs > 0) {
+        // Enforce light human delay if suggested by AntiBan engine (max 5s)
+        const delay = Math.min(result.delayMs, 5000);
+        await new Promise((resolve) => setTimeout(resolve, delay));
     }
 
     try {

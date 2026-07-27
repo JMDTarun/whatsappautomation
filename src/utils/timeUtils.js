@@ -9,6 +9,15 @@ export function getISTDate(date = new Date()) {
 }
 
 /**
+ * Returns YYYY-MM-DD string in IST (Asia/Kolkata) timezone.
+ */
+export function getISTDateString(date = new Date()) {
+    const ist = getISTDate(date);
+    return ist.toISOString().split('T')[0];
+}
+
+
+/**
  * Checks if a given Date falls within Night Quiet Hours in IST (09:00 PM to 07:30 AM IST).
  */
 export function isNightTimeIST(date = new Date()) {

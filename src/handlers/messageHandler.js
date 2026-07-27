@@ -35,8 +35,16 @@ export async function handleIncomingMessage(sessionId, sock, msg) {
         return;
     }
 
-    const textMessage = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.videoMessage?.caption || "";
+    const m = msg.message?.ephemeralMessage?.message ||
+              msg.message?.viewOnceMessage?.message ||
+              msg.message?.viewOnceMessageV2?.message ||
+              msg.message?.documentWithCaptionMessage?.message ||
+              msg.message;
+
+    const textMessage = (m?.conversation || m?.extendedTextMessage?.text || m?.imageMessage?.caption || m?.videoMessage?.caption || m?.documentMessage?.caption || "").trim();
     const textLower = textMessage.toLowerCase();
+
+    console.log(`[${sessionId}] 📩 Received message from ${actualRemoteJid} (fromMe: ${fromMe}): "${textMessage}"`);
 
     if (!fromMe) {
         antiban.onIncomingMessage(actualRemoteJid, textMessage);
@@ -141,8 +149,6 @@ export async function handleIncomingMessage(sessionId, sock, msg) {
         }
         return;
     }
-
-    console.log(`[${sessionId}] Received message from ${actualRemoteJid}: ${textMessage}`);
 
     let matchedKeyword = null;
     let matchedSociety = null;

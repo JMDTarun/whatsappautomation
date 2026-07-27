@@ -43,10 +43,11 @@ export function deleteQR(sessionId) {
 export async function startWhatsApp(sessionId = 'default') {
     console.log(`Starting WhatsApp connection for session: ${sessionId}...`);
 
-    // Prevent 405 Connection Replaced conflict: destroy existing socket for this session if running
+    // Prevent 405 Connection Replaced conflict & double event listener leaks: destroy existing socket
     const existingSock = sessions.get(sessionId);
     if (existingSock) {
         try {
+            existingSock.ev?.removeAllListeners();
             existingSock.ws?.close();
             existingSock.end?.(undefined);
         } catch (e) {}
@@ -159,12 +160,16 @@ export async function startWhatsApp(sessionId = 'default') {
             antiban.onDisconnect(reason);
 
             const statusCode = (lastDisconnect?.error)?.output?.statusCode;
-            const isUnauthorized = statusCode === 401;
-            const isConflict = statusCode === 405;
+            const isUnauthorized = statusCode === 401 || statusCode === 403;
+            const isConflict = statusCode === 405 || statusCode === 440;
 
-            // Auto-reconnect on socket closes unless session was logged out (401) or replaced (405)
+            // Auto-reconnect on socket closes unless session was logged out (401) or replaced elsewhere (405/440)
             const shouldReconnect = !isUnauthorized && !isConflict;
-            console.log(`Connection closed for session ${sessionId} (StatusCode: ${statusCode || 'N/A'}, Reason: ${reason}). Reconnecting: ${shouldReconnect}`);
+            if (isConflict) {
+                console.warn(`⚠️ [Session Conflict - ${sessionId}] Connection closed (StatusCode 440/405: Connection Replaced). Another server instance (e.g., Render vs Local) is running this WhatsApp session.`);
+            } else {
+                console.log(`Connection closed for session ${sessionId} (StatusCode: ${statusCode || 'N/A'}, Reason: ${reason}). Reconnecting: ${shouldReconnect}`);
+            }
 
             if (shouldReconnect) {
                 const attempts = (reconnectAttempts.get(sessionId) || 0) + 1;
@@ -201,7 +206,7 @@ export async function startWhatsApp(sessionId = 'default') {
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return;
+        if (type !== 'notify' && type !== 'append') return;
 
         for (const msg of messages) {
             if (!msg.message) continue;

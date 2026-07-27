@@ -2,6 +2,7 @@ import { getOrCreateAntiBan } from '../config/antibanConfig.js';
 import { getDBCollections } from '../config/db.js';
 import { contentVariator } from '../utils/contentVariator.js';
 import { calculateScheduledTime, isNightTimeIST } from '../utils/timeUtils.js';
+import { getSession } from './whatsappService.js';
 
 export async function sendMessageWithAntiBan(sessionId, sock, jid, content, skipDelay = false) {
     const antiban = getOrCreateAntiBan(sessionId);
@@ -41,12 +42,31 @@ export async function sendMessageWithAntiBan(sessionId, sock, jid, content, skip
     }
 
     try {
-        if (sock?.sendPresenceUpdate) {
-            await sock.sendPresenceUpdate('available').catch(() => {});
-            await sock.sendPresenceUpdate('composing', jid).catch(() => {});
+        const activeSock = getSession(sessionId) || sock;
+        if (!activeSock) {
+            throw new Error(`Socket connection for session ${sessionId} is unavailable.`);
         }
 
-        const sentMsg = await sock.sendMessage(jid, finalContent, {});
+        if (activeSock?.sendPresenceUpdate) {
+            await activeSock.sendPresenceUpdate('available').catch(() => {});
+            await activeSock.sendPresenceUpdate('composing', jid).catch(() => {});
+        }
+
+        let sentMsg;
+        try {
+            sentMsg = await activeSock.sendMessage(jid, finalContent, {});
+        } catch (sendErr) {
+            const errStr = String(sendErr?.message || sendErr);
+            if (errStr.includes('Connection Closed') || errStr.includes('428')) {
+                console.warn(`[AntiBan Outbound] Connection closed during send to ${jid}. Retrying in 2.5s with fresh socket...`);
+                await new Promise(r => setTimeout(r, 2500));
+                const freshSock = getSession(sessionId) || activeSock;
+                sentMsg = await freshSock.sendMessage(jid, finalContent, {});
+            } else {
+                throw sendErr;
+            }
+        }
+
         antiban.afterSend(jid, textContent, sentMsg?.key?.id);
 
         const replySnippet = textContent || (typeof finalContent === 'string' ? finalContent : (finalContent?.text || finalContent?.caption || finalContent?.fileName || 'media'));

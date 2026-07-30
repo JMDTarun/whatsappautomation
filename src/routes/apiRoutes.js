@@ -101,43 +101,20 @@ router.get('/status/:sessionId', (req, res) => {
     res.json({ sessionId, status });
 });
 
-// Helper to generate a status PNG image for <img> tags so images never break
-async function sendStatusPNG(res, textMessage) {
-    try {
-        const pngBuffer = await QRCode.toBuffer(textMessage);
-        res.type('image/png');
-        return res.send(pngBuffer);
-    } catch (e) {
-        return res.status(500).send('Error generating status image');
-    }
-}
-
-// API: Get QR JSON Data Status
-router.get('/qr-data/:sessionId', (req, res) => {
-    const { sessionId } = req.params;
-    const status = getConnectionStatus(sessionId) || 'not_found';
-    const qr = getQR(sessionId);
-    res.json({ sessionId, status, hasQr: !!qr });
-});
-
-// API: Get QR Code as Image (Always returns valid PNG stream, never breaks <img> tags)
+// API: Get QR Code as Image
 router.get('/qr/:sessionId', async (req, res) => {
     const { sessionId } = req.params;
-    const { force, reset } = req.query;
     let status = getConnectionStatus(sessionId);
 
-    if (force === 'true' || reset === 'true' || status === 'logged_out' || status === 'disconnected' || !status || status === 'not_found') {
-        console.log(`[QR Endpoint] Triggering fresh session start for ${sessionId}...`);
-        await resetSession(sessionId);
-        startWhatsApp(sessionId);
-    } else if (status !== 'connected' && !getQR(sessionId)) {
+    // If session is not initialized or disconnected, trigger startWhatsApp
+    if (!status || status === 'not_found' || status === 'logged_out' || status === 'disconnected') {
         startWhatsApp(sessionId);
     }
 
-    // Wait up to 5 seconds for QR code to be generated if initializing
+    // Wait up to 3 seconds if QR code is currently being generated
     let qr = getQR(sessionId);
     let attempts = 0;
-    while (!qr && attempts < 10) {
+    while (!qr && attempts < 6) {
         await new Promise(r => setTimeout(r, 500));
         qr = getQR(sessionId);
         status = getConnectionStatus(sessionId);
@@ -145,21 +122,17 @@ router.get('/qr/:sessionId', async (req, res) => {
         attempts++;
     }
 
-    if (qr) {
-        try {
-            const qrImageBuffer = await QRCode.toBuffer(qr);
-            res.type('image/png');
-            return res.send(qrImageBuffer);
-        } catch (err) {
-            return sendStatusPNG(res, `ERROR: ${err?.message || err}`);
-        }
+    if (!qr) {
+        return res.status(404).send('QR code not available or session already connected.');
     }
 
-    if (status === 'connected') {
-        return sendStatusPNG(res, `CONNECTED: ${sessionId}`);
+    try {
+        const qrImageBuffer = await QRCode.toBuffer(qr);
+        res.type('image/png');
+        return res.send(qrImageBuffer);
+    } catch (err) {
+        return res.status(500).send('Failed to generate QR image.');
     }
-
-    return sendStatusPNG(res, `INITIALIZING_SESSION: ${sessionId}`);
 });
 
 // API: Web Page for Easy Scanning with Live Spinner & Status Polling

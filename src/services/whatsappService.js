@@ -18,6 +18,34 @@ const reconnectAttempts = new Map();
 const reconnectTimers = new Map();
 const connectingSessions = new Set();
 
+export async function resetSession(sessionId) {
+    const sock = sessions.get(sessionId);
+    if (sock) {
+        try {
+            sock.ev?.removeAllListeners();
+            sock.ws?.close();
+            sock.end?.(undefined);
+        } catch (e) {}
+        sessions.delete(sessionId);
+    }
+    connectionStatus.set(sessionId, 'logged_out');
+    qrs.delete(sessionId);
+
+    const collections = await connectDB();
+    const authCollection = collections?.authCollection;
+    if (authCollection) {
+        await authCollection.deleteMany({ _id: { $regex: new RegExp(`^${sessionId}-`) } }).catch(() => {});
+    }
+
+    try {
+        if (fs.existsSync(`./auth_info_${sessionId}`)) {
+            fs.rmSync(`./auth_info_${sessionId}`, { recursive: true, force: true });
+        }
+    } catch (e) {}
+
+    console.log(`🧹 Session ${sessionId} credentials cleared from database and memory. Ready for fresh QR scan.`);
+}
+
 export function getSession(sessionId) {
     return sessions.get(sessionId);
 }
@@ -188,10 +216,12 @@ export async function startWhatsApp(sessionId = 'default') {
                 const attempts = (reconnectAttempts.get(sessionId) || 0) + 1;
                 reconnectAttempts.set(sessionId, attempts);
 
-                // If persistent conflicts occur (3+ times), auto-clean Signal session keys to force clean renegotiation
-                if (isConflict && attempts >= 3 && mongoUri && authCollection) {
-                    console.warn(`⚠️ [Session Recovery - ${sessionId}] Persistent conflict 405/440 detected (${attempts} attempts). Resetting Signal session keys...`);
-                    await authCollection.deleteMany({ _id: { $regex: new RegExp(`^${sessionId}-session-`) } }).catch(() => {});
+                // If persistent conflicts occur (3+ times), the session credentials are stale/invalid or unlinked on WhatsApp.
+                // Reset session auth completely to stop infinite 405 loops and allow a clean fresh QR code scan.
+                if (isConflict && attempts >= 3) {
+                    console.warn(`⚠️ [Session Auth Expired - ${sessionId}] Session received ${attempts} consecutive StatusCode 440/405 Connection Replaced errors. The stored auth credentials are invalid or unlinked on WhatsApp. Clearing stale credentials...`);
+                    await resetSession(sessionId);
+                    return;
                 }
 
                 // Auto-reconnect on socket closes unless session was logged out (401/403)

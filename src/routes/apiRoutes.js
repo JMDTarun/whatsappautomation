@@ -13,7 +13,8 @@ import {
     getAutoReply,
     setAutoReply,
     deleteQR,
-    startWhatsApp
+    startWhatsApp,
+    resetSession
 } from '../services/whatsappService.js';
 
 const router = express.Router();
@@ -47,6 +48,25 @@ router.post('/session', (req, res) => {
 
     startWhatsApp(sessionId);
     res.json({ success: true, message: `Session ${sessionId} started. Get QR at /api/qr/${sessionId}` });
+});
+
+// API: Reset session credentials to force a fresh QR code login
+router.post('/session/reset', async (req, res) => {
+    const { sessionId } = req.body;
+    if (!sessionId) {
+        return res.status(400).json({ error: 'sessionId is required' });
+    }
+
+    await resetSession(sessionId);
+    startWhatsApp(sessionId);
+    res.json({ success: true, message: `Session ${sessionId} reset and started. Get fresh QR code at GET /api/qr/${sessionId}` });
+});
+
+router.delete('/session/:sessionId', async (req, res) => {
+    const { sessionId } = req.params;
+    await resetSession(sessionId);
+    startWhatsApp(sessionId);
+    res.json({ success: true, message: `Session ${sessionId} reset and started. Get fresh QR code at GET /api/qr/${sessionId}` });
 });
 
 // API: Update auto-reply message for a specific session

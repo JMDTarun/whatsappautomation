@@ -101,13 +101,48 @@ router.get('/status/:sessionId', (req, res) => {
     res.json({ sessionId, status });
 });
 
-// API: Get QR Code as Image
+// API: Get QR Code as Image (Auto-triggers fresh QR if disconnected or requested via ?reset=true)
 router.get('/qr/:sessionId', async (req, res) => {
     const { sessionId } = req.params;
-    const qr = getQR(sessionId);
+    const { force, reset } = req.query;
+    let status = getConnectionStatus(sessionId);
+
+    // If force/reset query param is passed, or if session status is disconnected/logged_out/not_found
+    if (force === 'true' || reset === 'true' || status === 'logged_out' || status === 'disconnected' || !status || status === 'not_found') {
+        console.log(`[QR Endpoint] Triggering fresh session start for ${sessionId}...`);
+        await resetSession(sessionId);
+        startWhatsApp(sessionId);
+    } else if (status !== 'connected' && !getQR(sessionId)) {
+        startWhatsApp(sessionId);
+    }
+
+    // Wait up to 6 seconds for QR code to be generated if not ready immediately
+    let qr = getQR(sessionId);
+    let attempts = 0;
+    while (!qr && attempts < 12) {
+        await new Promise(r => setTimeout(r, 500));
+        qr = getQR(sessionId);
+        status = getConnectionStatus(sessionId);
+        if (status === 'connected') break;
+        attempts++;
+    }
+
+    if (status === 'connected') {
+        return res.status(200).json({
+            success: true,
+            sessionId,
+            status: 'connected',
+            message: `Session ${sessionId} is ALREADY connected to WhatsApp! Auto-replies are active.`
+        });
+    }
 
     if (!qr) {
-        return res.status(404).send('QR code not available or session already connected.');
+        return res.status(404).json({
+            error: 'QR code not available yet',
+            sessionId,
+            status: status || 'unknown',
+            hint: `Visit GET /api/qr/${sessionId}?reset=true to force a fresh QR code.`
+        });
     }
 
     try {
@@ -117,6 +152,40 @@ router.get('/qr/:sessionId', async (req, res) => {
     } catch (err) {
         res.status(500).send('Failed to generate QR image.');
     }
+});
+
+// API: Web Page for Easy Scanning
+router.get('/qr-page/:sessionId', (req, res) => {
+    const { sessionId } = req.params;
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>WhatsApp Login - ${sessionId}</title>
+        <meta http-equiv="refresh" content="20">
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #0f172a; color: #fff; margin: 0; }
+            .card { background: #1e293b; padding: 2.5rem; border-radius: 16px; text-align: center; box-shadow: 0 15px 35px rgba(0,0,0,0.4); max-width: 420px; width: 90%; }
+            h2 { margin-top: 0; color: #25d366; }
+            p { color: #94a3b8; font-size: 0.95rem; line-height: 1.5; }
+            img { width: 260px; height: 260px; border-radius: 12px; background: white; padding: 12px; margin: 1rem 0; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+            .btn { display: inline-block; margin-top: 0.5rem; padding: 12px 24px; background: #25d366; color: #0f172a; text-decoration: none; border-radius: 8px; font-weight: bold; transition: background 0.2s; }
+            .btn:hover { background: #22c55e; }
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h2>WhatsApp QR Code</h2>
+            <p>Session: <strong>${sessionId}</strong></p>
+            <p>Open WhatsApp on your phone &gt; <strong>Linked Devices</strong> &gt; <strong>Link a Device</strong> and scan:</p>
+            <img src="/api/qr/${sessionId}?reset=true" alt="WhatsApp QR Code" />
+            <br/>
+            <a href="/api/qr-page/${sessionId}" class="btn">🔄 Reset &amp; Refresh QR Code</a>
+        </div>
+    </body>
+    </html>
+    `;
+    res.send(html);
 });
 
 // API: Configure Auto-Reply Message per session

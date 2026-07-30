@@ -109,11 +109,13 @@ export async function startWhatsApp(sessionId = 'default') {
                 const metadataId = `session_metadata_${sessionId}`;
                 const metadata = await authCollection.findOne({ _id: metadataId });
                 const now = Date.now();
-                if (metadata && metadata.createdAt) {
-                    const limitDays = metadata.logoutDays || 30;
+
+                // Only force re-login if logoutDays is explicitly configured (e.g. > 0) by user
+                if (metadata && metadata.logoutDays && metadata.createdAt) {
+                    const limitDays = metadata.logoutDays;
                     const daysOld = (now - metadata.createdAt) / (1000 * 60 * 60 * 24);
                     if (daysOld >= limitDays) {
-                        console.log(`Session ${sessionId} is ${daysOld.toFixed(1)} days old (limit: ${limitDays} days). Forcing re-login...`);
+                        console.log(`Session ${sessionId} reached configured limit of ${limitDays} days. Resetting session...`);
                         await authCollection.deleteMany({ _id: { $regex: new RegExp(`^${sessionId}-`) } });
                     }
                 }

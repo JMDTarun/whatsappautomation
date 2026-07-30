@@ -109,6 +109,12 @@ export async function startWhatsApp(sessionId = 'default') {
     const rawSock = makeWASocket({
         auth: state,
         logger: pino({ level: 'silent' }),
+        markOnlineOnConnect: false,
+        keepAliveIntervalMs: 25000,
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        retryRequestDelayMs: 500,
+        maxMsgRetryCount: 5,
         getMessage: async () => {
             return { conversation: 'unknown message' };
         }
@@ -163,10 +169,10 @@ export async function startWhatsApp(sessionId = 'default') {
             const isUnauthorized = statusCode === 401 || statusCode === 403;
             const isConflict = statusCode === 405 || statusCode === 440;
 
-            // Auto-reconnect on socket closes unless session was logged out (401) or replaced elsewhere (405/440)
-            const shouldReconnect = !isUnauthorized && !isConflict;
+            // Auto-reconnect on socket closes unless session was logged out (401/403)
+            const shouldReconnect = !isUnauthorized;
             if (isConflict) {
-                console.warn(`⚠️ [Session Conflict - ${sessionId}] Connection closed (StatusCode 440/405: Connection Replaced). Another server instance (e.g., Render vs Local) is running this WhatsApp session.`);
+                console.warn(`⚠️ [Session Conflict - ${sessionId}] Connection closed (StatusCode 440/405: Connection Replaced). Retrying auto-reconnect in 45s...`);
             } else {
                 console.log(`Connection closed for session ${sessionId} (StatusCode: ${statusCode || 'N/A'}, Reason: ${reason}). Reconnecting: ${shouldReconnect}`);
             }
@@ -175,8 +181,10 @@ export async function startWhatsApp(sessionId = 'default') {
                 const attempts = (reconnectAttempts.get(sessionId) || 0) + 1;
                 reconnectAttempts.set(sessionId, attempts);
 
-                // Anti-Ban Safe Exponential Backoff with Jitter (15s -> 30s -> 60s -> 2m -> 5m max)
-                const baseDelays = [15000, 30000, 60000, 120000, 300000];
+                // Anti-Ban Safe Exponential Backoff with Jitter (15s -> 30s -> 60s -> 2m -> 5m max; 45s base for conflicts)
+                const baseDelays = isConflict
+                    ? [45000, 60000, 120000, 300000]
+                    : [15000, 30000, 60000, 120000, 300000];
                 const baseDelay = baseDelays[Math.min(attempts - 1, baseDelays.length - 1)];
 
                 // Add ±20% randomized jitter to prevent fixed repetitive timing signatures
@@ -221,8 +229,50 @@ export async function startWhatsApp(sessionId = 'default') {
     });
 }
 
+// Background watchdog interval to prevent silent zombie connection drops
+let watchdogInterval = null;
+const disconnectedSinceMap = new Map();
+
+export function startConnectionWatchdog() {
+    if (watchdogInterval) return;
+    console.log('🛡️ WhatsApp Connection Watchdog started (polling every 60s)...');
+
+    watchdogInterval = setInterval(async () => {
+        const sessionKeys = Array.from(connectionStatus.keys());
+        for (const sessionId of sessionKeys) {
+            const status = connectionStatus.get(sessionId);
+            const sock = sessions.get(sessionId);
+
+            if (status === 'connected') {
+                disconnectedSinceMap.delete(sessionId);
+                const isWsOpen = sock && (sock.ws?.readyState === 1 || sock.ws === undefined);
+
+                if (!isWsOpen) {
+                    console.warn(`⚠️ [Watchdog] Session ${sessionId} status is 'connected' but WebSocket is closed/invalid (readyState: ${sock?.ws?.readyState}). Triggering reconnect...`);
+                    connectionStatus.set(sessionId, 'disconnected');
+                    startWhatsApp(sessionId);
+                    continue;
+                }
+            } else if (status === 'disconnected') {
+                const since = disconnectedSinceMap.get(sessionId) || Date.now();
+                if (!disconnectedSinceMap.has(sessionId)) {
+                    disconnectedSinceMap.set(sessionId, since);
+                }
+
+                const elapsedSecs = (Date.now() - since) / 1000;
+                if (elapsedSecs >= 45) {
+                    console.warn(`⚠️ [Watchdog] Session ${sessionId} has been disconnected for ${elapsedSecs.toFixed(0)}s. Triggering forced auto-reconnect...`);
+                    disconnectedSinceMap.set(sessionId, Date.now());
+                    startWhatsApp(sessionId);
+                }
+            }
+        }
+    }, 60000);
+}
+
 export async function startupAutoConnect() {
     console.log('Checking for existing authenticated sessions to auto-connect...');
+    startConnectionWatchdog();
     const mongoUri = process.env.MONGODB_URI;
     const sessionIds = new Set();
 
@@ -263,3 +313,4 @@ export async function startupAutoConnect() {
         }
     }
 }
+

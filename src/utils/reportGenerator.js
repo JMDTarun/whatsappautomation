@@ -10,14 +10,13 @@ export async function generateExcelReport(sessionId, startDateString, endDateStr
 
     let query = {};
 
-    // Filter by sessionId if explicitly specified and not 'all'
+    // Filter strictly by sessionId if explicitly specified and not 'all'
     if (sessionId && sessionId !== 'all') {
         const cleanSess = sessionId.replace(/\D/g, '');
-        if (cleanSess) {
+        if (cleanSess && cleanSess !== sessionId) {
             query.$or = [
                 { sessionId: sessionId },
-                { sessionId: cleanSess },
-                { number: { $regex: cleanSess, $options: 'i' } }
+                { sessionId: cleanSess }
             ];
         } else {
             query.sessionId = sessionId;
@@ -38,15 +37,7 @@ export async function generateExcelReport(sessionId, startDateString, endDateStr
     }
     // If startDateString === 'all', no dateString query filter is added.
 
-    let records = await logsCollection.find(query).toArray();
-
-    // Fallback: if session-specific query returns 0 records, try querying across all sessions for the date range
-    if (records.length === 0 && sessionId && sessionId !== 'all') {
-        const fallbackQuery = { ...query };
-        delete fallbackQuery.$or;
-        delete fallbackQuery.sessionId;
-        records = await logsCollection.find(fallbackQuery).toArray();
-    }
+    const records = await logsCollection.find(query).toArray();
 
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Keyword Matches');

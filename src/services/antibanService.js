@@ -72,28 +72,11 @@ export async function sendMessageWithAntiBan(sessionId, sock, jid, content, skip
         const replySnippet = textContent || (typeof finalContent === 'string' ? finalContent : (finalContent?.text || finalContent?.caption || finalContent?.fileName || 'media'));
         console.log(`[AntiBan Outbound] 📤 Reply Sent to ${jid}: "${replySnippet}"`);
 
-        // Human Presence Management: Go offline if no messages scheduled in the next 60 seconds
-        if (sock?.sendPresenceUpdate) {
-            await sock.sendPresenceUpdate('paused', jid).catch(() => {});
-            setTimeout(async () => {
-                try {
-                    const { queueCollection } = getDBCollections();
-                    if (queueCollection) {
-                        const dueSoon = new Date(Date.now() + 60 * 1000);
-                        const pendingCount = await queueCollection.countDocuments({
-                            sessionId,
-                            status: 'pending',
-                            scheduledAt: { $lte: dueSoon }
-                        });
-                        if (pendingCount === 0) {
-                            await sock.sendPresenceUpdate('unavailable').catch(() => {});
-                            console.log(`[AntiBan Presence] 🌙 Presence set to offline for idle session ${sessionId}`);
-                        }
-                    } else {
-                        await sock.sendPresenceUpdate('unavailable').catch(() => {});
-                    }
-                } catch (e) { }
-            }, 4000);
+        // Return presence to offline ('unavailable') immediately after sending message
+        if (activeSock?.sendPresenceUpdate) {
+            await activeSock.sendPresenceUpdate('paused', jid).catch(() => {});
+            await activeSock.sendPresenceUpdate('unavailable').catch(() => {});
+            console.log(`[AntiBan Presence] 🌙 Presence reset to offline for session ${sessionId}`);
         }
 
         if (authCollection) {

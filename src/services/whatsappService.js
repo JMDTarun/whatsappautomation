@@ -30,6 +30,13 @@ export async function resetSession(sessionId) {
     }
     connectionStatus.set(sessionId, 'logged_out');
     qrs.delete(sessionId);
+    reconnectAttempts.delete(sessionId);
+    connectingSessions.delete(sessionId);
+
+    if (reconnectTimers.has(sessionId)) {
+        clearTimeout(reconnectTimers.get(sessionId));
+        reconnectTimers.delete(sessionId);
+    }
 
     const collections = await connectDB();
     const authCollection = collections?.authCollection;
@@ -218,16 +225,24 @@ export async function startWhatsApp(sessionId = 'default') {
                 const attempts = (reconnectAttempts.get(sessionId) || 0) + 1;
                 reconnectAttempts.set(sessionId, attempts);
 
-                // If persistent conflicts occur (3+ times), the session credentials are stale/invalid or unlinked on WhatsApp.
-                // Reset session auth completely to stop infinite 405 loops and allow a clean fresh QR code scan.
-                if (isConflict && attempts >= 3) {
-                    console.warn(`⚠️ [Session Auth Expired - ${sessionId}] Session received ${attempts} consecutive StatusCode 440/405 Connection Replaced errors. The stored auth credentials are invalid or unlinked on WhatsApp. Clearing stale credentials...`);
+                // If unauthorized (401/403), the session credentials are stale or logged out on phone.
+                // Reset auth credentials automatically and start a clean fresh session so a QR code is generated right away!
+                if (isUnauthorized) {
+                    console.warn(`⚠️ [Session Logged Out - ${sessionId}] Received StatusCode ${statusCode}. Clearing stale credentials for fresh QR code generation...`);
                     await resetSession(sessionId);
+                    setTimeout(() => startWhatsApp(sessionId), 1000);
                     return;
                 }
 
-                // Auto-reconnect on socket closes unless session was logged out (401/403)
-                const shouldReconnect = !isUnauthorized;
+                // If persistent conflicts occur (3+ times), the session credentials are stale/invalid or unlinked on WhatsApp.
+                if (isConflict && attempts >= 3) {
+                    console.warn(`⚠️ [Session Auth Expired - ${sessionId}] Session received ${attempts} consecutive StatusCode 440/405 Connection Replaced errors. Clearing stale credentials...`);
+                    await resetSession(sessionId);
+                    setTimeout(() => startWhatsApp(sessionId), 1000);
+                    return;
+                }
+
+                const shouldReconnect = true;
                 if (isConflict) {
                     console.warn(`⚠️ [Session Conflict - ${sessionId}] Connection closed (StatusCode 440/405: Connection Replaced). Scheduling reconnect attempt #${attempts}...`);
                 } else {

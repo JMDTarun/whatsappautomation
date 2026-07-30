@@ -104,35 +104,47 @@ router.get('/status/:sessionId', (req, res) => {
 // API: Get QR Code as Image
 router.get('/qr/:sessionId', async (req, res) => {
     const { sessionId } = req.params;
-    let status = getConnectionStatus(sessionId);
+    const { reset } = req.query;
 
-    // If session is not initialized or disconnected, trigger startWhatsApp
-    if (!status || status === 'not_found' || status === 'logged_out' || status === 'disconnected') {
+    if (reset === 'true') {
+        console.log(`[QR Endpoint] Reset requested for session ${sessionId}...`);
+        await resetSession(sessionId);
         startWhatsApp(sessionId);
+    } else {
+        const currentStatus = getConnectionStatus(sessionId);
+        if (!currentStatus || currentStatus === 'not_found' || currentStatus === 'logged_out' || currentStatus === 'disconnected') {
+            startWhatsApp(sessionId);
+        }
     }
 
-    // Wait up to 3 seconds if QR code is currently being generated
+    // Wait up to 4 seconds for QR code if it's currently being generated
     let qr = getQR(sessionId);
     let attempts = 0;
-    while (!qr && attempts < 6) {
+    while (!qr && attempts < 8) {
         await new Promise(r => setTimeout(r, 500));
         qr = getQR(sessionId);
-        status = getConnectionStatus(sessionId);
+        const status = getConnectionStatus(sessionId);
         if (status === 'connected' || status === 'qr_ready') break;
         attempts++;
     }
 
-    if (!qr) {
-        return res.status(404).send('QR code not available or session already connected.');
+    const finalStatus = getConnectionStatus(sessionId);
+
+    if (finalStatus === 'connected') {
+        return res.status(200).send(`Session "${sessionId}" is ALREADY CONNECTED to WhatsApp! Auto-replies are active. No QR code needed.`);
     }
 
-    try {
-        const qrImageBuffer = await QRCode.toBuffer(qr);
-        res.type('image/png');
-        return res.send(qrImageBuffer);
-    } catch (err) {
-        return res.status(500).send('Failed to generate QR image.');
+    if (qr) {
+        try {
+            const qrImageBuffer = await QRCode.toBuffer(qr);
+            res.type('image/png');
+            return res.send(qrImageBuffer);
+        } catch (err) {
+            return res.status(500).send('Failed to generate QR image.');
+        }
     }
+
+    return res.status(404).send(`QR code not ready yet (Current Status: ${finalStatus || 'initializing'}). Please wait 3 seconds and refresh, or visit https://whatsappautomation-aqsj.onrender.com/api/qr/${sessionId}?reset=true to force a fresh QR code.`);
 });
 
 // API: Web Page for Easy Scanning with Live Spinner & Status Polling

@@ -101,18 +101,7 @@ router.get('/status/:sessionId', (req, res) => {
     res.json({ sessionId, status });
 });
 
-// Helper to generate a status PNG image for <img> tags
-async function sendStatusPNG(res, textMessage) {
-    try {
-        const pngBuffer = await QRCode.toBuffer(textMessage);
-        res.type('image/png');
-        return res.send(pngBuffer);
-    } catch (e) {
-        return res.status(500).send('Error generating status image');
-    }
-}
-
-// API: Get QR Code as Image (Always returns valid PNG stream, never breaks <img> tags)
+// API: Get QR Code as Image (Strictly renders genuine Baileys auth QR strings)
 router.get('/qr/:sessionId', async (req, res) => {
     const { sessionId } = req.params;
     const { force, reset } = req.query;
@@ -127,10 +116,10 @@ router.get('/qr/:sessionId', async (req, res) => {
         startWhatsApp(sessionId);
     }
 
-    // Wait up to 6 seconds for QR code to be generated if not ready immediately
+    // Wait up to 5 seconds for QR code to be generated if initializing
     let qr = getQR(sessionId);
     let attempts = 0;
-    while (!qr && attempts < 12) {
+    while (!qr && attempts < 10) {
         await new Promise(r => setTimeout(r, 500));
         qr = getQR(sessionId);
         status = getConnectionStatus(sessionId);
@@ -139,7 +128,12 @@ router.get('/qr/:sessionId', async (req, res) => {
     }
 
     if (status === 'connected') {
-        return sendStatusPNG(res, `SESSION CONNECTED: ${sessionId} (Auto-replies Active)`);
+        return res.status(200).json({
+            success: true,
+            sessionId,
+            status: 'connected',
+            message: `Session ${sessionId} is ALREADY connected to WhatsApp! Auto-replies are active.`
+        });
     }
 
     if (qr) {
@@ -148,11 +142,16 @@ router.get('/qr/:sessionId', async (req, res) => {
             res.type('image/png');
             return res.send(qrImageBuffer);
         } catch (err) {
-            return sendStatusPNG(res, `ERROR: ${err?.message || err}`);
+            return res.status(500).json({ error: 'Failed to render QR buffer' });
         }
     }
 
-    return sendStatusPNG(res, `INITIALIZING QR: ${sessionId}. Please refresh in 3 seconds.`);
+    return res.status(404).json({
+        error: 'QR code initializing',
+        sessionId,
+        status: status || 'initializing',
+        hint: 'Please refresh in 3 seconds.'
+    });
 });
 
 // API: Web Page for Easy Scanning with Live Status Polling
@@ -168,43 +167,54 @@ router.get('/qr-page/:sessionId', (req, res) => {
             .card { background: #1e293b; padding: 2.5rem; border-radius: 16px; text-align: center; box-shadow: 0 15px 35px rgba(0,0,0,0.4); max-width: 440px; width: 100%; }
             h2 { margin-top: 0; color: #25d366; }
             p { color: #94a3b8; font-size: 0.95rem; line-height: 1.5; }
-            .status-badge { display: inline-block; padding: 6px 16px; border-radius: 20px; font-weight: bold; font-size: 0.85rem; margin: 0.5rem 0; }
+            .status-badge { display: inline-block; padding: 8px 18px; border-radius: 20px; font-weight: bold; font-size: 0.9rem; margin: 0.5rem 0; }
             .status-qr_ready { background: #0284c7; color: #fff; }
             .status-connected { background: #16a34a; color: #fff; }
             .status-disconnected { background: #dc2626; color: #fff; }
             .status-initializing { background: #d97706; color: #fff; }
-            .img-container { background: white; padding: 12px; border-radius: 12px; display: inline-block; margin: 1rem 0; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+            .img-container { background: white; padding: 12px; border-radius: 12px; display: inline-block; margin: 1rem 0; box-shadow: 0 4px 12px rgba(0,0,0,0.2); min-height: 260px; min-width: 260px; }
             img { width: 260px; height: 260px; display: block; border: none; }
             .btn-group { display: flex; gap: 10px; justify-content: center; margin-top: 1rem; }
             .btn { padding: 12px 20px; background: #25d366; color: #0f172a; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 0.9rem; text-decoration: none; transition: background 0.2s; }
             .btn:hover { background: #22c55e; }
             .btn-secondary { background: #334155; color: #f8fafc; }
             .btn-secondary:hover { background: #475569; }
+            .success-box { background: #14532d; border: 1px solid #22c55e; color: #4ade80; padding: 1.5rem; border-radius: 12px; margin: 1rem 0; }
         </style>
     </head>
     <body>
         <div class="card">
             <h2>WhatsApp Login</h2>
             <p>Session ID: <strong>${sessionId}</strong></p>
-            <div id="status-badge" class="status-badge status-initializing">Checking session status...</div>
-            <br/>
-            <div class="img-container">
+            <div id="status-badge" class="status-badge status-initializing">Checking status...</div>
+            
+            <div id="qr-wrapper" class="img-container">
                 <img id="qr-img" src="/api/qr/${sessionId}?t=${Date.now()}" alt="WhatsApp QR Code" />
             </div>
-            <p id="instruction">Open WhatsApp on your phone &gt; <strong>Linked Devices</strong> &gt; <strong>Link a Device</strong> and scan the code above.</p>
+
+            <div id="success-view" class="success-box" style="display: none;">
+                <h3>✅ WhatsApp Connected!</h3>
+                <p>Your session is active and auto-replies are processing incoming messages.</p>
+            </div>
+
+            <p id="instruction">Open WhatsApp on your phone &gt; <strong>Linked Devices</strong> &gt; <strong>Link a Device</strong> and scan the QR code above.</p>
+            
             <div class="btn-group">
                 <button onclick="refreshQR()" class="btn">🔄 Refresh QR</button>
-                <button onclick="resetSession()" class="btn btn-secondary">⚡ Force Reset</button>
+                <button onclick="resetSession()" class="btn btn-secondary">⚡ Force Reset Session</button>
             </div>
         </div>
 
         <script>
+            let lastQRTime = 0;
+
             async function checkStatus() {
                 try {
                     const res = await fetch('/api/status/${sessionId}');
                     const data = await res.json();
                     const badge = document.getElementById('status-badge');
-                    const img = document.getElementById('qr-img');
+                    const qrWrapper = document.getElementById('qr-wrapper');
+                    const successView = document.getElementById('success-view');
                     const inst = document.getElementById('instruction');
                     
                     const status = data.status || 'initializing';
@@ -212,20 +222,30 @@ router.get('/qr-page/:sessionId', (req, res) => {
                     badge.className = 'status-badge status-' + status;
 
                     if (status === 'connected') {
-                        inst.innerHTML = '🎉 <strong>Session is connected and active!</strong> Auto-replies are processing.';
+                        qrWrapper.style.display = 'none';
+                        successView.style.display = 'block';
+                        inst.style.display = 'none';
+                    } else {
+                        qrWrapper.style.display = 'inline-block';
+                        successView.style.display = 'none';
+                        inst.style.display = 'block';
+                        
+                        if (Date.now() - lastQRTime > 12000) {
+                            refreshQR();
+                        }
                     }
                 } catch (e) {}
             }
 
             function refreshQR() {
+                lastQRTime = Date.now();
                 const img = document.getElementById('qr-img');
                 img.src = '/api/qr/${sessionId}?t=' + Date.now();
-                checkStatus();
             }
 
             async function resetSession() {
                 const badge = document.getElementById('status-badge');
-                badge.innerText = 'Resetting session credentials...';
+                badge.innerText = 'Resetting session...';
                 badge.className = 'status-badge status-initializing';
                 try {
                     await fetch('/api/session/reset', {
@@ -234,10 +254,13 @@ router.get('/qr-page/:sessionId', (req, res) => {
                         body: JSON.stringify({ sessionId: '${sessionId}' })
                     });
                 } catch(e) {}
-                setTimeout(refreshQR, 2500);
+                setTimeout(() => {
+                    refreshQR();
+                    checkStatus();
+                }, 2500);
             }
 
-            setInterval(checkStatus, 4000);
+            setInterval(checkStatus, 3000);
             checkStatus();
         </script>
     </body>

@@ -210,6 +210,7 @@ export async function startWhatsApp(sessionId = 'default') {
                 console.log(`New QR code for session ${sessionId}. Available at GET /api/qr/${sessionId}`);
                 qrs.set(sessionId, qr);
                 connectionStatus.set(sessionId, 'qr_ready');
+                connectingSessions.delete(sessionId);
             }
 
             if (connection === 'close') {
@@ -244,7 +245,7 @@ export async function startWhatsApp(sessionId = 'default') {
 
                 const shouldReconnect = true;
                 if (isConflict) {
-                    console.warn(`⚠️ [Session Conflict - ${sessionId}] Connection closed (StatusCode 440/405: Connection Replaced). Scheduling reconnect attempt #${attempts}...`);
+                    console.warn(`🚨 [MULTI-SERVER CONFLICT DETECTED - Session ${sessionId}] Received StatusCode 405/440 Connection Replaced! This occurs when two server processes (e.g. Render hosted server AND local machine) are running simultaneously with the same MONGODB_URI and session ID. Please stop one server instance!`);
                 } else {
                     console.log(`Connection closed for session ${sessionId} (StatusCode: ${statusCode || 'N/A'}, Reason: ${reason}). Reconnecting: ${shouldReconnect}`);
                 }
@@ -254,15 +255,15 @@ export async function startWhatsApp(sessionId = 'default') {
                         clearTimeout(reconnectTimers.get(sessionId));
                     }
 
-                    // Anti-Ban Safe Exponential Backoff with Jitter (15s -> 30s -> 60s -> 2m -> 5m max; 45s base for conflicts)
-                    const baseDelays = isConflict
-                        ? [45000, 60000, 120000, 300000]
-                        : [15000, 30000, 60000, 120000, 300000];
+                    const isAuthenticated = !!sock?.user?.id;
+                    const baseDelays = isAuthenticated
+                        ? (isConflict ? [45000, 60000, 120000, 300000] : [15000, 30000, 60000, 120000, 300000])
+                        : [1000, 2000, 3000];
                     const baseDelay = baseDelays[Math.min(attempts - 1, baseDelays.length - 1)];
 
-                    // Add ±20% randomized jitter to prevent fixed repetitive timing signatures
+                    // Add ±20% randomized jitter
                     const jitter = Math.floor(Math.random() * (baseDelay * 0.4)) - (baseDelay * 0.2);
-                    const backoffDelay = Math.max(10000, Math.floor(baseDelay + jitter));
+                    const backoffDelay = isAuthenticated ? Math.max(10000, Math.floor(baseDelay + jitter)) : Math.floor(baseDelay + jitter);
 
                     console.log(`[AntiBan Safety] Reconnect attempt #${attempts} for session ${sessionId} scheduled in ${(backoffDelay / 1000).toFixed(1)}s`);
 
@@ -283,24 +284,23 @@ export async function startWhatsApp(sessionId = 'default') {
                     reconnectTimers.delete(sessionId);
                 }
 
-                // Check for duplicate session connected to the same phone number
-                const userJid = sock.user?.id ? sock.user.id.replace(/:.*@/, '@') : '';
-                const userPhone = userJid.split('@')[0];
+                const userPhone = sock.user?.id ? sock.user.id.split(':')[0] : null;
+                console.log(`[Phone Check] Session ${sessionId} authenticated as phone number: ${userPhone}`);
 
+                // Safeguard: Check if another active session in database is logged into the exact same phone number
                 if (userPhone) {
                     for (const [otherSessionId, otherSock] of sessions.entries()) {
                         if (otherSessionId !== sessionId) {
-                            const otherJid = otherSock?.user?.id ? otherSock.user.id.replace(/:.*@/, '@') : '';
-                            const otherPhone = otherJid.split('@')[0];
-                            if (otherPhone && otherPhone === userPhone && connectionStatus.get(otherSessionId) === 'connected') {
-                                console.warn(`⚠️ [Session Dup Safeguard] Session '${sessionId}' connected to phone ${userPhone}, but session '${otherSessionId}' is ALREADY active for this number. Disconnecting duplicate session '${sessionId}'.`);
+                            const otherPhone = otherSock.user?.id ? otherSock.user.id.split(':')[0] : null;
+                            if (otherPhone === userPhone) {
+                                console.warn(`⚠️ [Duplicate Phone Safeguard] Session '${sessionId}' and Session '${otherSessionId}' are BOTH logged into phone number ${userPhone}. Closing duplicate session '${otherSessionId}' to prevent 405 Connection Replaced loop!`);
                                 try {
-                                    sock.ev?.removeAllListeners();
-                                    sock.ws?.close();
-                                    sock.end?.(undefined);
+                                    otherSock.ev?.removeAllListeners();
+                                    otherSock.ws?.close();
+                                    otherSock.end?.(undefined);
                                 } catch (e) {}
-                                sessions.delete(sessionId);
-                                connectionStatus.set(sessionId, 'duplicate_disabled');
+                                sessions.delete(otherSessionId);
+                                connectionStatus.set(otherSessionId, 'duplicate_disabled');
                                 return;
                             }
                         }
@@ -333,8 +333,9 @@ export async function startWhatsApp(sessionId = 'default') {
                 await handleIncomingMessage(sessionId, sock, msg);
             }
         });
-    } finally {
+    } catch (err) {
         connectingSessions.delete(sessionId);
+        console.error(`Error in startWhatsApp for ${sessionId}:`, err);
     }
 }
 
@@ -354,10 +355,13 @@ export function startConnectionWatchdog() {
 
             if (status === 'connected') {
                 disconnectedSinceMap.delete(sessionId);
-                const isWsOpen = sock && (sock.ws?.readyState === 1 || sock.ws === undefined);
+                // baileys-antiban wrapSocket may not expose ws.readyState (it's undefined even when healthy).
+                // Only treat as dead if readyState is explicitly CLOSING(2) or CLOSED(3), or if sock itself is missing.
+                const wsState = sock?.ws?.readyState;
+                const isWsDead = !sock || (wsState !== undefined && wsState !== 1);
 
-                if (!isWsOpen) {
-                    console.warn(`⚠️ [Watchdog] Session ${sessionId} status is 'connected' but WebSocket is closed/invalid (readyState: ${sock?.ws?.readyState}). Triggering reconnect...`);
+                if (isWsDead) {
+                    console.warn(`⚠️ [Watchdog] Session ${sessionId} status is 'connected' but WebSocket is closed/invalid (readyState: ${wsState}). Triggering reconnect...`);
                     connectionStatus.set(sessionId, 'disconnected');
                     startWhatsApp(sessionId);
                     continue;
@@ -398,7 +402,20 @@ export async function startupAutoConnect() {
             const credsDocs = await authCollection.find({ _id: { $regex: /-creds$/ } }).toArray();
             for (const doc of credsDocs) {
                 const id = doc._id.replace('-creds', '');
-                if (id) sessionIds.add(id);
+                if (id && doc.data) {
+                    try {
+                        const parsed = JSON.parse(doc.data);
+                        // ONLY auto-connect sessions that are fully authenticated with a logged-in phone number (creds.me)
+                        if (parsed && parsed.me && parsed.me.id) {
+                            sessionIds.add(id);
+                        } else {
+                            console.log(`[AutoConnect] Skipping unauthenticated session '${id}' (waiting for QR scan).`);
+                        }
+                    } catch (e) {
+                        // Fallback if parsing fails
+                        sessionIds.add(id);
+                    }
+                }
             }
         } catch (error) {
             console.error('Failed to auto-connect via MongoDB:', error);
